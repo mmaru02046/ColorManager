@@ -24,6 +24,7 @@ class Palette:
     source_path: Path | None = None
     source_format: str = "unknown"
     source_group: str = "materials"
+    metadata: dict[str, str | int | float] = field(default_factory=dict)
 
     @property
     def preview_colors(self) -> list[ColorEntry]:

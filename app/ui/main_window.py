@@ -8,6 +8,7 @@ from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal, QUrl, QMimeData
 from PySide6.QtGui import QColor, QGuiApplication, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QButtonGroup,
     QDialog,
     QDialogButtonBox,
@@ -36,8 +37,9 @@ from PySide6.QtWidgets import (
 )
 from app.config import AppConfig
 from app.models import ColorEntry, Palette
-from app.parsers import load_image_grid_palette, load_palette, scan_palettes
+from app.parsers import load_image_grid_palette, load_palette, load_pdf_palette, pdf_page_count, render_pdf_page, scan_palettes
 from app.storage import ensure_directory, save_originlab_pal, save_palette_ase, save_palette_csv, save_palette_json
+from app.ui.pdf_dialog import PdfExtractDialog
 class ClickableColorCard(QFrame):
     clicked = Signal(object)
     toggled = Signal(object, bool)
@@ -290,16 +292,6 @@ def build_complementary_colors(hex_code: str, wheel_mode: str = "rgb", count: in
         colors.append(rotate_color_hue(hex_code, offset, wheel_mode))
     return colors[:count]
 
-def build_complementary_colors(hex_code: str, wheel_mode: str = "rgb", count: int = 4) -> list[str]:
-    count = max(2, min(9, count))
-    colors = [normalize_hex_code(hex_code), rotate_color_hue(hex_code, 180, wheel_mode)]
-    offsets = [150, 210, 120, 240, 90, 270, 60]
-    for offset in offsets:
-        if len(colors) >= count:
-            break
-        colors.append(rotate_color_hue(hex_code, offset, wheel_mode))
-    return colors[:count]
-
 def build_interpolated_colors(hex_codes: list[str], count: int) -> list[str]:
     anchors = [normalize_hex_code(value) for value in hex_codes if value]
     if len(anchors) < 2:
@@ -315,26 +307,6 @@ def build_interpolated_colors(hex_codes: list[str], count: int) -> list[str]:
         output.append(mix_hex_colors(anchors[left_index], anchors[left_index + 1], local_ratio))
     return output
 
-def build_tint_ramp(hex_code: str, bias: str, steps: int = 5) -> list[str]:
-    whites = {
-        "neutral": "#F7F4EE",
-        "warm": "#FAF1E5",
-        "cool": "#EEF5FA",
-    }
-    white_target = whites.get(bias, whites["neutral"])
-    colors = [normalize_hex_code(hex_code)]
-    for index in range(1, steps):
-        ratio = index / max(1, steps - 1)
-        colors.append(mix_hex_colors(hex_code, white_target, ratio * 0.88))
-    return colors
-    for index in range(count):
-        position = index / max(1, count - 1)
-        segment_position = position * segments
-        left_index = min(int(segment_position), segments - 1)
-        local_ratio = segment_position - left_index
-        output.append(mix_hex_colors(anchors[left_index], anchors[left_index + 1], local_ratio))
-    return output
-    return colors[:count]
 def build_tint_ramp(hex_code: str, bias: str, steps: int = 5) -> list[str]:
     whites = {
         "neutral": "#F7F4EE",
@@ -940,7 +912,7 @@ class MainWindow(QMainWindow):
         filter_bottom_row.setSpacing(6)
         filter_bottom_row.addWidget(QLabel("Type"))
         self.type_filter_combo = QComboBox()
-        self.type_filter_combo.addItems(["Any", "Code Palette", "Image", "Gradient"])
+        self.type_filter_combo.addItems(["Any", "Code Palette", "Image", "Gradient", "Document"])
         self.type_filter_combo.currentTextChanged.connect(self.populate_palette_tree)
         filter_bottom_row.addWidget(self.type_filter_combo)
         filter_bottom_row.addWidget(QLabel("Tag"))
@@ -962,7 +934,6 @@ class MainWindow(QMainWindow):
         self.palette_tree.itemClicked.connect(self.on_palette_tree_clicked)
         layout.addWidget(self.palette_tree, 1)
         return panel
-        return panel
     def build_detail_panel(self) -> QWidget:
         panel = QFrame()
         panel.setObjectName("detailPanel")
@@ -976,6 +947,10 @@ class MainWindow(QMainWindow):
         self.palette_meta.setWordWrap(True)
         self.palette_meta.setStyleSheet("color: #475569; background: transparent;")
         layout.addWidget(self.palette_meta)
+        self.pdf_extractor_button = QPushButton("Open PDF Extractor")
+        self.pdf_extractor_button.clicked.connect(self.open_current_pdf_extractor)
+        self.pdf_extractor_button.hide()
+        layout.addWidget(self.pdf_extractor_button)
         self.detail_splitter = QSplitter(Qt.Vertical)
         self.detail_splitter.setChildrenCollapsible(False)
         self.image_preview_label = ImagePreviewLabel()
@@ -1275,7 +1250,7 @@ class MainWindow(QMainWindow):
             self,
             "Import Materials",
             self.config.materials_dir or str(self.base_dir),
-            "Supported Files (*.ase *.gpl *.csv *.json *.pal *.png *.jpg *.jpeg *.bmp *.webp *.tif *.tiff);;All Files (*.*)",
+            "Supported Files (*.ase *.gpl *.csv *.json *.pal *.pdf *.png *.jpg *.jpeg *.bmp *.webp *.tif *.tiff);;All Files (*.*)",
         )
         if not selected:
             return
@@ -1370,23 +1345,6 @@ class MainWindow(QMainWindow):
             self.render_palette_colors(self.current_palette)
         self.statusBar().showMessage(f"Added {added} colors from {len(palettes)} palette(s)", 2500)
 
-    def add_selected_palette_colors(self) -> None:
-        palettes = self.get_selected_palette_items()
-        if not palettes:
-            return
-        existing_hexes = {item.hex_code for item in self.selected_colors}
-        added = 0
-        for palette in palettes:
-            for color in palette.colors:
-                if color.hex_code in existing_hexes:
-                    continue
-                self.selected_colors.append(color)
-                existing_hexes.add(color.hex_code)
-                added += 1
-        self.refresh_cart()
-        if self.current_palette is not None:
-            self.render_palette_colors(self.current_palette)
-        self.statusBar().showMessage(f"Added {added} colors from {len(palettes)} palette(s)", 2500)
     def open_palette_tree_menu(self, position) -> None:
         menu = QMenu(self)
         selected = self.get_selected_palette_items()
@@ -1398,6 +1356,7 @@ class MainWindow(QMainWindow):
         add_colors_action = menu.addAction("Add Colors")
         rename_action = menu.addAction("Rename")
         extract_action = menu.addAction("Extract Theme")
+        pdf_action = menu.addAction("Open PDF Extractor")
         delete_action = menu.addAction("Delete To Recycle Bin")
         if not selected:
             favorite_action.setEnabled(False)
@@ -1408,12 +1367,17 @@ class MainWindow(QMainWindow):
             add_colors_action.setEnabled(False)
             rename_action.setEnabled(False)
             extract_action.setEnabled(False)
+            pdf_action.setEnabled(False)
             delete_action.setEnabled(False)
         elif len(selected) > 1:
             rename_action.setEnabled(False)
             extract_action.setEnabled(False)
-        elif selected[0].source_format not in {"image", "grid"}:
-            extract_action.setEnabled(False)
+            pdf_action.setEnabled(False)
+        else:
+            if selected[0].source_format not in {"image", "grid"}:
+                extract_action.setEnabled(False)
+            if selected[0].source_format != "pdf":
+                pdf_action.setEnabled(False)
         action = menu.exec(self.palette_tree.viewport().mapToGlobal(position))
         if action is favorite_action:
             self.toggle_selected_favorites()
@@ -1431,6 +1395,8 @@ class MainWindow(QMainWindow):
             self.rename_current_palette()
         elif action is extract_action:
             self.reextract_current_image_palette()
+        elif action is pdf_action:
+            self.open_current_pdf_extractor()
         elif action is delete_action:
             self.delete_selected_to_recycle_bin()
     def toggle_selected_favorites(self) -> None:
@@ -1790,7 +1756,10 @@ class MainWindow(QMainWindow):
             return "Image"
         if palette.source_format == "pal":
             return "Gradient"
+        if palette.source_format == "pdf":
+            return "Document"
         return "Code Palette"
+
     def get_palette_hue_label(self, palette: Palette) -> str:
         if not palette.colors:
             return "Neutral"
@@ -1802,6 +1771,7 @@ class MainWindow(QMainWindow):
         labels.discard("Neutral")
         if len(labels) == 1:
             return next(iter(labels))
+        return "Mixed"
     def get_color_hue_label(self, color: ColorEntry) -> str:
         red, green, blue = color.rgb
         max_value = max(red, green, blue)
@@ -1834,16 +1804,26 @@ class MainWindow(QMainWindow):
         self.current_palette = palette
         self.palette_title.setText(palette.name)
         source = str(palette.source_path) if palette.source_path else "Generated"
-        self.palette_meta.setText(
-            f"{len(palette.colors)} colors | {palette.source_group} | Source: {source}"
-        )
+        if palette.source_format == "pdf":
+            page_count = palette.metadata.get("page_count", "?")
+            self.palette_meta.setText(
+                f"{len(palette.colors)} preview colors | PDF | {page_count} pages | Source: {source}"
+            )
+            self.pdf_extractor_button.show()
+        else:
+            self.palette_meta.setText(
+                f"{len(palette.colors)} colors | {palette.source_group} | Source: {source}"
+            )
+            self.pdf_extractor_button.hide()
         self.update_source_preview(palette)
         self.render_palette_colors(palette)
 
-    def render_palette_colors(self, palette: Palette) -> None:
+    def render_palette_colors(self, palette: Palette | None) -> None:
         self.color_container.clear()
+        if palette is None:
+            return
         selected_hexes = {item.hex_code for item in self.selected_colors}
-        if palette.source_format in {"image", "grid"}:
+        if palette.source_format in {"image", "grid", "pdf"}:
             columns = 4
             min_width = 132
         elif palette.source_format == "pal":
@@ -1861,8 +1841,12 @@ class MainWindow(QMainWindow):
             widget.setMinimumWidth(min_width)
             self.color_container.add_widget(widget, index, columns=columns)
 
-    def update_source_preview(self, palette: Palette) -> None:
+    def update_source_preview(self, palette: Palette | None) -> None:
         if not hasattr(self, "image_preview_label"):
+            return
+        if palette is None:
+            self.image_preview_label.clear_preview()
+            self.image_preview_label.hide()
             return
         if palette.source_path is None:
             self.image_preview_label.clear_preview()
@@ -1877,6 +1861,22 @@ class MainWindow(QMainWindow):
                 build_gradient_pixmap([color.hex_code for color in palette.colors], 900, 64),
                 False,
             )
+            self.image_preview_label.show()
+            return
+        if palette.source_format == "pdf":
+            try:
+                preview_page = int(palette.metadata.get("preview_page", 1)) - 1
+                pdf_image = render_pdf_page(palette.source_path, page_index=max(0, preview_page), max_edge=1100)
+                pixmap = QPixmap.fromImage(pdf_image)
+            except Exception:
+                self.image_preview_label.clear_preview()
+                self.image_preview_label.hide()
+                return
+            self.detail_splitter.setOrientation(Qt.Horizontal)
+            self.detail_splitter.setSizes([360, 640])
+            self.image_preview_label.setMinimumHeight(300)
+            self.image_preview_label.setMinimumWidth(320)
+            self.image_preview_label.set_source_pixmap(pixmap, False)
             self.image_preview_label.show()
             return
         if palette.source_format in {"image", "grid"}:
@@ -1894,8 +1894,6 @@ class MainWindow(QMainWindow):
             return
         self.detail_splitter.setOrientation(Qt.Vertical)
         self.detail_splitter.setSizes([110, 470])
-        self.image_preview_label.clear_preview()
-        self.image_preview_label.hide()
         self.image_preview_label.clear_preview()
         self.image_preview_label.hide()
     def on_preview_color_picked(self, hex_code: str) -> None:
@@ -2221,6 +2219,17 @@ class MainWindow(QMainWindow):
             if not self.config.library_dir:
                 QMessageBox.information(self, "Library Folder Missing", "Choose a library folder first.")
                 return
+            exported_path = self.export_palette_files(target_key, palette)
+            if exported_path is not None:
+                self.pending_select_source_path = str(exported_path)
+            self.reload_palettes()
+        if output_key == "clipboard":
+            self.statusBar().showMessage("Copied palette to clipboard", 3000)
+        elif output_key == "files":
+            self.statusBar().showMessage("Exported palette files", 3000)
+        else:
+            self.statusBar().showMessage("Copied palette and exported files", 3000)
+
     def build_ordered_colors(self, colors: list[ColorEntry], order_key: str) -> list[ColorEntry]:
         ordered = list(colors)
         if order_key == "reverse":
@@ -2241,14 +2250,14 @@ class MainWindow(QMainWindow):
             rows = [f"{r/255:.6f} {g/255:.6f} {b/255:.6f}" for r, g, b in (color.rgb for color in palette.colors)]
             return "\n\n".join([
                 "HEX\n" + ", ".join(hexes),
-                "R\n" + f"{self.make_safe_filename(palette.name)} <- c(" + ", ".join(f"\"{value}\"" for value in hexes) + ")",
-                "Python\n" + f"{self.make_safe_filename(palette.name)} = [" + ", ".join(f"\"{value}\"" for value in hexes) + "]",
+                "R\n" + f"{self.make_safe_filename(palette.name)} <- c(" + ", ".join(f'\"{value}\"' for value in hexes) + ")",
+                "Python\n" + f"{self.make_safe_filename(palette.name)} = [" + ", ".join(f'\"{value}\"' for value in hexes) + "]",
                 "MATLAB\n" + f"{self.make_safe_filename(palette.name)} = [ ...\n    " + "; ...\n    ".join(rows) + "\n];",
             ])
         if target_key == "r":
-            return f"{self.make_safe_filename(palette.name)} <- c(" + ", ".join(f"\"{value}\"" for value in hexes) + ")"
+            return f"{self.make_safe_filename(palette.name)} <- c(" + ", ".join(f'\"{value}\"' for value in hexes) + ")"
         if target_key == "python":
-            return f"{self.make_safe_filename(palette.name)} = [" + ", ".join(f"\"{value}\"" for value in hexes) + "]"
+            return f"{self.make_safe_filename(palette.name)} = [" + ", ".join(f'\"{value}\"' for value in hexes) + "]"
         if target_key == "matlab":
             rows = [f"{r/255:.6f} {g/255:.6f} {b/255:.6f}" for r, g, b in (color.rgb for color in palette.colors)]
             return f"{self.make_safe_filename(palette.name)} = [ ...\n    " + "; ...\n    ".join(rows) + "\n];"
@@ -2256,33 +2265,31 @@ class MainWindow(QMainWindow):
             return "\n".join(hexes)
         return ", ".join(hexes)
 
-    def export_palette_files(self, target_key: str, palette: Palette) -> None:
+    def export_palette_files(self, target_key: str, palette: Palette) -> Path | None:
         assert self.config.library_dir
         file_stem = self.make_safe_filename(palette.name)
         library_palettes_dir = Path(self.config.library_dir) / "palettes"
         ensure_directory(library_palettes_dir)
-        save_palette_json(palette, library_palettes_dir / f"{file_stem}.json")
+        library_json_path = library_palettes_dir / f"{file_stem}.json"
+        save_palette_json(palette, library_json_path)
         if target_key == "all_formats":
             for export_key in ("originlab", "general", "r", "python", "matlab"):
                 self.export_palette_files(export_key, palette)
-            return
+            return library_json_path
         exports_root = Path(self.config.library_dir) / "exports" / target_key
         ensure_directory(exports_root)
         if target_key == "general":
             save_palette_json(palette, exports_root / f"{file_stem}.json")
             save_palette_csv(palette, exports_root / f"{file_stem}.csv")
-            return
+            return library_json_path
         if target_key == "originlab":
             save_palette_ase(palette, exports_root / f"{file_stem}.ase")
             save_palette_csv(palette, exports_root / f"{file_stem}.csv")
-            return
+            return library_json_path
         content = self.build_clipboard_text(target_key, palette)
-        extension = {
-            "r": ".R",
-            "python": ".py",
-            "matlab": ".m",
-        }[target_key]
+        extension = {"r": ".R", "python": ".py", "matlab": ".m"}[target_key]
         (exports_root / f"{file_stem}{extension}").write_text(content, encoding="utf-8")
+        return library_json_path
 
     def export_gradient_palette(self) -> None:
         if not self.selected_colors:
@@ -2309,6 +2316,7 @@ class MainWindow(QMainWindow):
         save_originlab_pal(palette, output_dir / f"{self.make_safe_filename(name.strip())}.pal", steps=steps)
         self.reload_palettes()
         self.statusBar().showMessage("Exported OriginLab gradient", 4000)
+
     def reextract_current_image_palette(self) -> None:
         if self.current_palette is None or self.current_palette.source_path is None:
             QMessageBox.information(self, "Unavailable", "Select an image palette first.")
@@ -2335,20 +2343,45 @@ class MainWindow(QMainWindow):
         palette.source_group = self.current_palette.source_group
         self.replace_palette_in_views(palette)
         self.statusBar().showMessage(f"Reextracted {len(palette.colors)} colors", 3000)
+
+    def open_current_pdf_extractor(self) -> None:
+        if self.current_palette is None or self.current_palette.source_path is None:
+            QMessageBox.information(self, "Unavailable", "Select a PDF material first.")
+            return
+        if self.current_palette.source_format != "pdf":
+            QMessageBox.information(self, "Unavailable", "This action is only for PDF materials.")
+            return
+        if not self.ensure_materials_dir_ready():
+            return
+        try:
+            dialog = PdfExtractDialog(self.current_palette.source_path, Path(self.config.materials_dir), self)
+        except Exception as exc:
+            QMessageBox.warning(self, "PDF Extractor Unavailable", str(exc))
+            return
+        dialog.exec()
+        if dialog.saved_paths:
+            self.pending_select_source_path = str(dialog.saved_paths[-1])
+            self.reload_palettes()
+            self.statusBar().showMessage(f"Saved {len(dialog.saved_paths)} PDF palette(s) into materials", 3500)
+
     def replace_palette_in_views(self, palette: Palette) -> None:
         self.current_palette = palette
+        replaced = False
         for index, existing in enumerate(self.palettes):
             if existing.source_path == palette.source_path:
                 self.palettes[index] = palette
+                replaced = True
+                break
+        if not replaced:
+            self.palettes.append(palette)
         for index, existing in enumerate(self.filtered_palettes):
             if existing.source_path == palette.source_path:
                 self.filtered_palettes[index] = palette
-                self.select_palette_in_tree(palette)
                 break
-        self.palette_title.setText(palette.name)
-        self.palette_meta.setText(f"{len(palette.colors)} colors | {palette.source_group} | Source: {palette.source_path}")
-        self.update_source_preview(palette)
-        self.render_palette_colors(palette)
+        self.populate_palette_tree()
+        self.select_palette_in_tree(palette)
+        self.show_palette_details(palette)
+
     def detect_current_image_grid(self) -> None:
         if self.current_palette is None or self.current_palette.source_path is None:
             QMessageBox.information(self, "Unavailable", "Select an image palette first.")
@@ -2419,6 +2452,39 @@ class MainWindow(QMainWindow):
             self.config.set_favorite(path, False)
         for group_name in self.config.group_names():
             self.config.remove_from_group(group_name, path)
+
+    def cleanup_empty_parent_dirs(self, deleted_path: Path) -> None:
+        roots: list[Path] = []
+        if self.config.materials_dir:
+            roots.append(Path(self.config.materials_dir).resolve())
+        if self.config.library_dir:
+            roots.append(Path(self.config.library_dir).resolve())
+        if not roots:
+            return
+        start_dir = deleted_path if deleted_path.is_dir() else deleted_path.parent
+        try:
+            current = start_dir.resolve()
+        except Exception:
+            current = start_dir
+        while True:
+            matching_root = None
+            for root in roots:
+                try:
+                    current.relative_to(root)
+                    matching_root = root
+                    break
+                except Exception:
+                    continue
+            if matching_root is None or current == matching_root:
+                break
+            try:
+                if current.exists() and not any(current.iterdir()):
+                    current.rmdir()
+                    current = current.parent
+                    continue
+            except Exception:
+                pass
+            break
     def delete_selected_to_recycle_bin(self) -> None:
         selected = [palette for palette in self.get_selected_palette_items() if palette.source_path is not None]
         if not selected:
@@ -2436,14 +2502,34 @@ class MainWindow(QMainWindow):
         if answer != QMessageBox.Yes:
             return
         deleted = 0
+        failed: list[str] = []
         for path in unique_paths:
             if not path.exists():
+                self.remove_path_from_config(str(path))
+                self.cleanup_empty_parent_dirs(path)
+                deleted += 1
                 continue
             if self.recycle_path(path):
                 self.remove_path_from_config(str(path))
+                self.cleanup_empty_parent_dirs(path)
                 deleted += 1
+            else:
+                failed.append(path.name)
         if deleted:
             self.config.save()
+            self.reload_palettes()
+            self.current_palette = None
+            self.palette_title.setText("Select a palette")
+            self.palette_meta.setText("Choose one from the left to preview.")
+            self.update_source_preview(None)
+            self.render_palette_colors(None)
+            self.statusBar().showMessage(f"Moved {deleted} item(s) to Recycle Bin", 3000)
+        if failed:
+            QMessageBox.warning(
+                self,
+                "Delete Failed",
+                "Could not move these item(s) to Recycle Bin:\n" + "\n".join(failed[:10]),
+            )
     def copy_source_file(self) -> None:
         selected = [palette for palette in self.get_selected_palette_items() if palette.source_path is not None]
         if not selected:
@@ -2557,3 +2643,6 @@ class MainWindow(QMainWindow):
         if app is not None:
             app.closeAllWindows()
             app.quit()
+
+
+

@@ -6,7 +6,7 @@ import struct
 from collections import defaultdict
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QImage
 
 from app.models import ColorEntry, Palette
@@ -14,7 +14,8 @@ from app.models import ColorEntry, Palette
 
 PALETTE_EXTENSIONS = {".ase", ".csv", ".json", ".gpl", ".pal"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff"}
-SUPPORTED_EXTENSIONS = PALETTE_EXTENSIONS | IMAGE_EXTENSIONS
+PDF_EXTENSIONS = {".pdf"}
+SUPPORTED_EXTENSIONS = PALETTE_EXTENSIONS | IMAGE_EXTENSIONS | PDF_EXTENSIONS
 
 
 def scan_palettes(directory: Path, source_group: str = "materials", image_color_count: int = 5) -> list[Palette]:
@@ -46,6 +47,8 @@ def load_palette(path: Path, color_count: int = 5) -> Palette:
         return load_ase_palette(path)
     if suffix == ".pal":
         return load_pal_palette(path)
+    if suffix in PDF_EXTENSIONS:
+        return load_pdf_palette(path, color_count=color_count)
     if suffix in IMAGE_EXTENSIONS:
         return load_image_palette(path, color_count=color_count)
     raise ValueError(f"Unsupported file type: {path.suffix}")
@@ -74,11 +77,11 @@ def load_csv_palette(path: Path) -> Palette:
             color_name = (row.get("name") or row.get("Name") or "").strip()
             hex_code = (row.get("hex") or row.get("HEX") or row.get("Hex") or "").strip()
             if not hex_code:
-                r = row.get("r") or row.get("R")
-                g = row.get("g") or row.get("G")
-                b = row.get("b") or row.get("B")
-                if r is not None and g is not None and b is not None:
-                    hex_code = rgb_to_hex(int(r), int(g), int(b))
+                red = row.get("r") or row.get("R")
+                green = row.get("g") or row.get("G")
+                blue = row.get("b") or row.get("B")
+                if red is not None and green is not None and blue is not None:
+                    hex_code = rgb_to_hex(int(red), int(green), int(blue))
             if not hex_code:
                 continue
             if not color_name:
@@ -106,11 +109,11 @@ def load_gpl_palette(path: Path) -> Palette:
         if len(parts) < 3:
             continue
         try:
-            r, g, b = map(int, parts[:3])
+            red, green, blue = map(int, parts[:3])
         except ValueError:
             continue
         color_name = " ".join(parts[3:]).strip() or f"Color {len(colors) + 1}"
-        colors.append(ColorEntry(name=color_name, hex_code=rgb_to_hex(r, g, b)))
+        colors.append(ColorEntry(name=color_name, hex_code=rgb_to_hex(red, green, blue)))
     return Palette(name=name, colors=colors, source_path=path, source_format="gpl")
 
 
@@ -140,11 +143,11 @@ def load_ase_palette(path: Path) -> Palette:
         value_offset = name_offset + 4
 
         if model == "RGB":
-            r, g, b = struct.unpack(">fff", block_data[value_offset:value_offset + 12])
+            red, green, blue = struct.unpack(">fff", block_data[value_offset:value_offset + 12])
             hex_code = rgb_to_hex(
-                round(clamp01(r) * 255),
-                round(clamp01(g) * 255),
-                round(clamp01(b) * 255),
+                round(clamp01(red) * 255),
+                round(clamp01(green) * 255),
+                round(clamp01(blue) * 255),
             )
         elif model == "GRAY":
             gray = struct.unpack(">f", block_data[value_offset:value_offset + 4])[0]
@@ -177,14 +180,146 @@ def load_pal_palette(path: Path) -> Palette:
     for index in range(color_count):
         if offset + 4 > len(payload):
             break
-        b, g, r, _flags = struct.unpack("<BBBB", payload[offset:offset + 4])
-        colors.append(ColorEntry(name=f"Color {index + 1}", hex_code=rgb_to_hex(r, g, b)))
+        blue, green, red, _flags = struct.unpack("<BBBB", payload[offset:offset + 4])
+        colors.append(ColorEntry(name=f"Color {index + 1}", hex_code=rgb_to_hex(red, green, blue)))
         offset += 4
     return Palette(name=path.stem, colors=colors, source_path=path, source_format="pal")
 
 
 def load_image_palette(path: Path, color_count: int = 5) -> Palette:
     image = load_qimage(path)
+    return extract_palette_from_qimage(
+        image,
+        color_count=color_count,
+        name=path.stem,
+        source_path=path,
+        source_format="image",
+    )
+
+
+def load_pdf_palette(path: Path, color_count: int = 5, page_index: int = 0) -> Palette:
+    image = render_pdf_page(path, page_index=page_index, max_edge=960)
+    palette = extract_palette_from_qimage(
+        image,
+        color_count=color_count,
+        name=path.stem,
+        source_path=path,
+        source_format="pdf",
+    )
+    palette.metadata["page_count"] = pdf_page_count(path)
+    palette.metadata["preview_page"] = page_index + 1
+    return palette
+
+
+def load_pdf_region_palette(
+    path: Path,
+    page_index: int,
+    crop_bounds: tuple[int, int, int, int],
+    color_count: int = 5,
+) -> Palette:
+    image = render_pdf_page(path, page_index=page_index, max_edge=1800)
+    left, top, right, bottom = crop_bounds
+    region = image.copy(left, top, max(1, right - left), max(1, bottom - top))
+    palette = extract_palette_from_qimage(
+        region,
+        color_count=color_count,
+        name=f"{path.stem}_p{page_index + 1:03d}_region",
+        source_path=path,
+        source_format="pdf_region",
+    )
+    palette.metadata["page"] = page_index + 1
+    return palette
+
+
+def load_pdf_grid_palette(
+    path: Path,
+    page_index: int,
+    rows: int,
+    cols: int,
+    sample_ratio: float = 0.6,
+    crop_bounds: tuple[int, int, int, int] | None = None,
+) -> Palette:
+    image = render_pdf_page(path, page_index=page_index, max_edge=1800)
+    rows = max(1, rows)
+    cols = max(1, cols)
+    sample_ratio = max(0.2, min(0.9, sample_ratio))
+    if crop_bounds is None:
+        crop_left, crop_top, crop_right, crop_bottom = detect_grid_bounds(image, prefer_bottom=rows == 1)
+    else:
+        crop_left, crop_top, crop_right, crop_bottom = crop_bounds
+    crop_width = max(1, crop_right - crop_left)
+    crop_height = max(1, crop_bottom - crop_top)
+    cell_width = crop_width / cols
+    cell_height = crop_height / rows
+    colors: list[ColorEntry] = []
+
+    for row in range(rows):
+        for col in range(cols):
+            center_x = crop_left + (col + 0.5) * cell_width
+            center_y = crop_top + (row + 0.5) * cell_height
+            sample_width = max(1, round(cell_width * sample_ratio))
+            sample_height = max(1, round(cell_height * sample_ratio))
+            left = max(crop_left, round(center_x - sample_width / 2))
+            top = max(crop_top, round(center_y - sample_height / 2))
+            right = min(crop_right, left + sample_width)
+            bottom = min(crop_bottom, top + sample_height)
+            rgb = average_image_region(image, left, top, right, bottom)
+            colors.append(ColorEntry(name=f"R{row + 1}C{col + 1}", hex_code=rgb_to_hex(*rgb)))
+
+    palette = Palette(
+        name=f"{path.stem}_p{page_index + 1:03d}_grid_{rows}x{cols}",
+        colors=colors,
+        source_path=path,
+        source_format="pdf_grid",
+    )
+    palette.metadata["page"] = page_index + 1
+    return palette
+
+
+def load_image_grid_palette(
+    path: Path,
+    rows: int,
+    cols: int,
+    sample_ratio: float = 0.6,
+    crop_bounds: tuple[int, int, int, int] | None = None,
+) -> Palette:
+    image = load_qimage(path, max_size=0)
+    rows = max(1, rows)
+    cols = max(1, cols)
+    sample_ratio = max(0.2, min(0.9, sample_ratio))
+    if crop_bounds is None:
+        crop_left, crop_top, crop_right, crop_bottom = detect_grid_bounds(image, prefer_bottom=rows == 1)
+    else:
+        crop_left, crop_top, crop_right, crop_bottom = crop_bounds
+    crop_width = max(1, crop_right - crop_left)
+    crop_height = max(1, crop_bottom - crop_top)
+    cell_width = crop_width / cols
+    cell_height = crop_height / rows
+    colors: list[ColorEntry] = []
+
+    for row in range(rows):
+        for col in range(cols):
+            center_x = crop_left + (col + 0.5) * cell_width
+            center_y = crop_top + (row + 0.5) * cell_height
+            sample_width = max(1, round(cell_width * sample_ratio))
+            sample_height = max(1, round(cell_height * sample_ratio))
+            left = max(crop_left, round(center_x - sample_width / 2))
+            top = max(crop_top, round(center_y - sample_height / 2))
+            right = min(crop_right, left + sample_width)
+            bottom = min(crop_bottom, top + sample_height)
+            rgb = average_image_region(image, left, top, right, bottom)
+            colors.append(ColorEntry(name=f"R{row + 1}C{col + 1}", hex_code=rgb_to_hex(*rgb)))
+
+    return Palette(name=f"{path.stem}_grid_{rows}x{cols}", colors=colors, source_path=path, source_format="grid")
+
+
+def extract_palette_from_qimage(
+    image: QImage,
+    color_count: int,
+    name: str,
+    source_path: Path | None,
+    source_format: str,
+) -> Palette:
     buckets: dict[tuple[int, int, int], list[int]] = defaultdict(lambda: [0, 0, 0, 0])
     for y in range(image.height()):
         for x in range(image.width()):
@@ -226,44 +361,50 @@ def load_image_palette(path: Path, color_count: int = 5) -> Palette:
             if len(colors) >= target_count:
                 break
 
-    return Palette(name=path.stem, colors=colors, source_path=path, source_format="image")
+    return Palette(name=name, colors=colors, source_path=source_path, source_format=source_format)
 
 
-def load_image_grid_palette(
-    path: Path,
-    rows: int,
-    cols: int,
-    sample_ratio: float = 0.6,
-    crop_bounds: tuple[int, int, int, int] | None = None,
-) -> Palette:
-    image = load_qimage(path, max_size=0)
-    rows = max(1, rows)
-    cols = max(1, cols)
-    sample_ratio = max(0.2, min(0.9, sample_ratio))
-    if crop_bounds is None:
-        crop_left, crop_top, crop_right, crop_bottom = detect_grid_bounds(image, prefer_bottom=rows == 1)
-    else:
-        crop_left, crop_top, crop_right, crop_bottom = crop_bounds
-    crop_width = max(1, crop_right - crop_left)
-    crop_height = max(1, crop_bottom - crop_top)
-    cell_width = crop_width / cols
-    cell_height = crop_height / rows
-    colors: list[ColorEntry] = []
+def pdf_page_count(path: Path) -> int:
+    document = load_pdf_document(path)
+    page_count = document.pageCount()
+    if page_count <= 0:
+        raise ValueError(f"Unable to read PDF pages: {path}")
+    return page_count
 
-    for row in range(rows):
-        for col in range(cols):
-            center_x = crop_left + (col + 0.5) * cell_width
-            center_y = crop_top + (row + 0.5) * cell_height
-            sample_width = max(1, round(cell_width * sample_ratio))
-            sample_height = max(1, round(cell_height * sample_ratio))
-            left = max(crop_left, round(center_x - sample_width / 2))
-            top = max(crop_top, round(center_y - sample_height / 2))
-            right = min(crop_right, left + sample_width)
-            bottom = min(crop_bottom, top + sample_height)
-            rgb = average_image_region(image, left, top, right, bottom)
-            colors.append(ColorEntry(name=f"R{row + 1}C{col + 1}", hex_code=rgb_to_hex(*rgb)))
 
-    return Palette(name=f"{path.stem}_grid_{rows}x{cols}", colors=colors, source_path=path, source_format="grid")
+def render_pdf_page(path: Path, page_index: int = 0, max_edge: int = 1400) -> QImage:
+    document = load_pdf_document(path)
+    page_count = document.pageCount()
+    if page_count <= 0:
+        raise ValueError(f"Unable to read PDF pages: {path}")
+    if page_index < 0 or page_index >= page_count:
+        raise IndexError(f"PDF page out of range: {page_index}")
+
+    page_size = document.pagePointSize(page_index)
+    width = float(page_size.width()) if hasattr(page_size, "width") else 595.0
+    height = float(page_size.height()) if hasattr(page_size, "height") else 842.0
+    if width <= 0 or height <= 0:
+        width = 595.0
+        height = 842.0
+    scale = max_edge / max(width, height)
+    target_size = QSize(max(1, round(width * scale)), max(1, round(height * scale)))
+    image = document.render(page_index, target_size)
+    if image.isNull():
+        raise ValueError(f"Unable to render PDF page {page_index + 1}: {path}")
+    if image.format() != QImage.Format.Format_ARGB32:
+        image = image.convertToFormat(QImage.Format.Format_ARGB32)
+    return image
+
+
+def load_pdf_document(path: Path):
+    try:
+        from PySide6.QtPdf import QPdfDocument
+    except ImportError as exc:
+        raise RuntimeError("PySide6 QtPdf support is not available in this environment") from exc
+
+    document = QPdfDocument()
+    document.load(str(path))
+    return document
 
 
 def detect_grid_bounds(image: QImage, prefer_bottom: bool = False) -> tuple[int, int, int, int]:
@@ -398,13 +539,11 @@ def rgb_to_hex(r: int, g: int, b: int) -> str:
 
 
 def cmyk_to_hex(c: float, m: float, y: float, k: float) -> str:
-    r = round(255 * (1 - clamp01(c)) * (1 - clamp01(k)))
-    g = round(255 * (1 - clamp01(m)) * (1 - clamp01(k)))
-    b = round(255 * (1 - clamp01(y)) * (1 - clamp01(k)))
-    return rgb_to_hex(r, g, b)
+    red = round(255 * (1 - clamp01(c)) * (1 - clamp01(k)))
+    green = round(255 * (1 - clamp01(m)) * (1 - clamp01(k)))
+    blue = round(255 * (1 - clamp01(y)) * (1 - clamp01(k)))
+    return rgb_to_hex(red, green, blue)
 
 
 def clamp01(value: float) -> float:
     return max(0.0, min(1.0, value))
-
-
