@@ -1,10 +1,11 @@
 ﻿from __future__ import annotations
 import colorsys
+import json
 import math
 import shutil
 import subprocess
 from pathlib import Path
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal, QUrl, QMimeData
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal, QUrl, QMimeData, QTimer
 from PySide6.QtGui import QColor, QGuiApplication, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -345,6 +346,177 @@ def build_diverging_colors(start_hex: str, end_hex: str, steps: int = 5, midpoin
     right = build_interpolated_colors([midpoint_hex, normalize_hex_code(end_hex)], right_count)
     return (left[:-1] + right)[:steps]
 
+
+PREVIEW_PHYLO_NEWICK = """((((A1:0.05,A2:0.1):0.15,A3:0.25):0.2,(B1:0.3,(B2:0.05,B3:0.1):0.25):0.3):0.4,
+((C1:0.1,C2:0.15):0.2,(C3:0.2,C4:0.25):0.3):0.35,
+(((D1:0.05,D2:0.05):0.1,D3:0.2):0.25,(D4:0.3,D5:0.35):0.4):0.45,
+((E1:0.15,E2:0.2):0.3,E3:0.4):0.5);"""
+CHINA_BOUNDARY_GEOJSON = Path(__file__).resolve().parent.parent / "assets" / "china_boundary.geojson"
+_PREVIEW_PHYLO_CACHE: tuple[dict[str, object], list[dict[str, object]], float] | None = None
+_CHINA_PREVIEW_SHAPES_CACHE: list[list[tuple[float, float]]] | None = None
+
+
+def parse_preview_newick(newick: str) -> dict[str, object]:
+    text = "".join(character for character in newick.strip() if not character.isspace())
+    index = 0
+
+    def parse_name() -> str:
+        nonlocal index
+        start = index
+        while index < len(text) and text[index] not in ':,();':
+            index += 1
+        return text[start:index]
+
+    def parse_length() -> float:
+        nonlocal index
+        if index >= len(text) or text[index] != ':':
+            return 0.0
+        index += 1
+        start = index
+        while index < len(text) and text[index] not in ',();':
+            index += 1
+        try:
+            return float(text[start:index])
+        except ValueError:
+            return 0.0
+
+    def parse_node() -> dict[str, object]:
+        nonlocal index
+        children: list[dict[str, object]] = []
+        name = ""
+        if index < len(text) and text[index] == '(':
+            index += 1
+            while index < len(text):
+                children.append(parse_node())
+                if index < len(text) and text[index] == ',':
+                    index += 1
+                    continue
+                if index < len(text) and text[index] == ')':
+                    index += 1
+                    break
+            name = parse_name()
+        else:
+            name = parse_name()
+        return {
+            'name': name,
+            'length': parse_length(),
+            'children': children,
+        }
+
+    return parse_node()
+
+
+def _count_preview_leaves(node: dict[str, object]) -> int:
+    children = node.get('children', [])
+    if not children:
+        return 1
+    return sum(_count_preview_leaves(child) for child in children)
+
+
+def _layout_preview_tree(
+    node: dict[str, object],
+    start_index: int,
+    total_leaves: int,
+    parent_distance: float,
+    leaves: list[dict[str, object]],
+) -> tuple[int, float]:
+    distance = parent_distance + float(node.get('length', 0.0))
+    node['distance'] = distance
+    children = node.get('children', [])
+    if not children:
+        angle = -90.0 + 360.0 * ((start_index + 0.5) / max(1, total_leaves))
+        node['leaf_start'] = start_index
+        node['leaf_end'] = start_index + 1
+        node['angle'] = angle
+        node['angle_start'] = angle
+        node['angle_end'] = angle
+        leaves.append(node)
+        return start_index + 1, distance
+
+    current_index = start_index
+    max_distance = distance
+    for child in children:
+        current_index, child_max_distance = _layout_preview_tree(
+            child,
+            current_index,
+            total_leaves,
+            distance,
+            leaves,
+        )
+        max_distance = max(max_distance, child_max_distance)
+    node['leaf_start'] = start_index
+    node['leaf_end'] = current_index
+    node['angle_start'] = children[0]['angle_start']
+    node['angle_end'] = children[-1]['angle_end']
+    node['angle'] = (float(node['angle_start']) + float(node['angle_end'])) / 2.0
+    return current_index, max_distance
+
+
+def get_preview_phylo_layout() -> tuple[dict[str, object], list[dict[str, object]], float]:
+    global _PREVIEW_PHYLO_CACHE
+    if _PREVIEW_PHYLO_CACHE is not None:
+        return _PREVIEW_PHYLO_CACHE
+    root = parse_preview_newick(PREVIEW_PHYLO_NEWICK)
+    total_leaves = max(1, _count_preview_leaves(root))
+    leaves: list[dict[str, object]] = []
+    _, max_distance = _layout_preview_tree(root, 0, total_leaves, 0.0, leaves)
+    _PREVIEW_PHYLO_CACHE = (root, leaves, max(max_distance, 1e-6))
+    return _PREVIEW_PHYLO_CACHE
+
+
+def _ring_area(points: list[tuple[float, float]]) -> float:
+    if len(points) < 3:
+        return 0.0
+    area = 0.0
+    for index, (x_value, y_value) in enumerate(points):
+        next_x, next_y = points[(index + 1) % len(points)]
+        area += x_value * next_y - next_x * y_value
+    return area / 2.0
+
+
+def load_china_preview_shapes() -> list[list[tuple[float, float]]]:
+    global _CHINA_PREVIEW_SHAPES_CACHE
+    if _CHINA_PREVIEW_SHAPES_CACHE is not None:
+        return _CHINA_PREVIEW_SHAPES_CACHE
+    if not CHINA_BOUNDARY_GEOJSON.exists():
+        _CHINA_PREVIEW_SHAPES_CACHE = []
+        return _CHINA_PREVIEW_SHAPES_CACHE
+
+    payload = None
+    for encoding in ('utf-8', 'utf-8-sig', 'gb18030'):
+        try:
+            payload = json.loads(CHINA_BOUNDARY_GEOJSON.read_text(encoding=encoding))
+            break
+        except UnicodeDecodeError:
+            continue
+    if payload is None:
+        _CHINA_PREVIEW_SHAPES_CACHE = []
+        return _CHINA_PREVIEW_SHAPES_CACHE
+
+    shapes: list[list[tuple[float, float]]] = []
+    for feature in payload.get('features', []):
+        properties = feature.get('properties') or {}
+        adcode = properties.get('adcode')
+        if properties.get('level') != 'province' or not isinstance(adcode, int):
+            continue
+        geometry = feature.get('geometry') or {}
+        geometry_type = geometry.get('type')
+        coordinates = geometry.get('coordinates') or []
+        candidate_rings: list[list[tuple[float, float]]] = []
+        if geometry_type == 'Polygon' and coordinates:
+            candidate_rings.append([(float(x_value), float(y_value)) for x_value, y_value in coordinates[0]])
+        elif geometry_type == 'MultiPolygon':
+            for polygon in coordinates:
+                if polygon:
+                    candidate_rings.append([(float(x_value), float(y_value)) for x_value, y_value in polygon[0]])
+        if not candidate_rings:
+            continue
+        largest_ring = max(candidate_rings, key=lambda ring: abs(_ring_area(ring)))
+        if len(largest_ring) >= 3:
+            shapes.append(largest_ring)
+    _CHINA_PREVIEW_SHAPES_CACHE = shapes
+    return _CHINA_PREVIEW_SHAPES_CACHE
+
 class ImagePreviewLabel(QLabel):
     color_picked = Signal(str)
     region_picked = Signal(object)
@@ -531,6 +703,7 @@ class ChartPreviewWidget(QWidget):
         self.highlighted_indices: set[int] = set()
         self.setMinimumHeight(240)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
     def set_preview_state(
         self,
         colors: list[str],
@@ -555,6 +728,7 @@ class ChartPreviewWidget(QWidget):
         self.preview_mode = preview_mode
         self.highlighted_indices = set(highlighted_indices or [])
         self.update()
+
     def preview_color(self, hex_code: str) -> QColor:
         source = QColor(hex_code)
         red = source.red()
@@ -567,6 +741,12 @@ class ChartPreviewWidget(QWidget):
             return simulate_colorblind(hex_code, self.preview_mode)
         return source
 
+    def effective_color(self, index: int, colors: list[str], has_focus: bool) -> QColor:
+        color = self.preview_color(colors[index % len(colors)])
+        is_highlighted = index in self.highlighted_indices
+        alpha_scale = self.alpha if (not has_focus or is_highlighted) else max(18, self.alpha // 3)
+        color.setAlpha(round(255 * alpha_scale / 100))
+        return color
 
     def paintEvent(self, event) -> None:  # noqa: N802
         super().paintEvent(event)
@@ -574,21 +754,30 @@ class ChartPreviewWidget(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         painter.fillRect(self.rect(), QColor("#FFFFFF"))
         plot = self.rect().adjusted(42, 20, -20, -40)
+        colors = self.colors or ["#2563EB", "#DC2626", "#059669", "#D97706", "#7C3AED"]
+        has_focus = bool(self.highlighted_indices)
+        if self.chart_type == "heatmap":
+            self.paint_heatmap(painter, plot, colors, has_focus)
+        elif self.chart_type == "phylo":
+            self.paint_phylo(painter, plot, colors, has_focus)
+        elif self.chart_type == "map":
+            self.paint_map(painter, plot, colors, has_focus)
+        else:
+            self.paint_standard_chart(painter, plot, colors, has_focus)
+        painter.end()
+
+    def paint_standard_chart(self, painter: QPainter, plot: QRectF, colors: list[str], has_focus: bool) -> None:
         painter.setPen(QPen(QColor("#CBD5E1"), 1))
         for index in range(5):
-            y = plot.top() + plot.height() * index / 4
-            painter.drawLine(plot.left(), int(y), plot.right(), int(y))
+            y_value = plot.top() + plot.height() * index / 4
+            painter.drawLine(plot.left(), int(y_value), plot.right(), int(y_value))
         painter.setPen(QPen(QColor("#64748B"), 1.2))
         painter.drawLine(plot.left(), plot.bottom(), plot.right(), plot.bottom())
-        colors = self.colors or ["#2563EB", "#DC2626", "#059669", "#D97706"]
         series_total = min(self.series_count, len(colors))
         total_points = self.group_count
-        has_focus = bool(self.highlighted_indices)
         for s_idx in range(series_total):
-            color = self.preview_color(colors[s_idx])
+            color = self.effective_color(s_idx, colors, has_focus)
             is_highlighted = s_idx in self.highlighted_indices
-            alpha_scale = self.alpha if (not has_focus or is_highlighted) else max(18, self.alpha // 3)
-            color.setAlpha(round(255 * alpha_scale / 100))
             values = []
             for point_idx in range(total_points):
                 base = math.sin((point_idx + 1) * 0.8 + s_idx * 0.9)
@@ -596,9 +785,9 @@ class ChartPreviewWidget(QWidget):
                 values.append(max(0.08, min(0.92, value)))
             points = []
             for point_idx, value in enumerate(values):
-                x = plot.left() + (plot.width() * point_idx / max(1, total_points - 1))
-                y = plot.bottom() - value * plot.height()
-                points.append(QPointF(x, y))
+                x_value = plot.left() + (plot.width() * point_idx / max(1, total_points - 1))
+                y_value = plot.bottom() - value * plot.height()
+                points.append(QPointF(x_value, y_value))
             stroke_width = float(self.line_width + 2) if is_highlighted else float(self.line_width)
             if self.chart_type == "line":
                 painter.setPen(QPen(color, stroke_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
@@ -623,11 +812,335 @@ class ChartPreviewWidget(QWidget):
                         painter.setBrush(Qt.NoBrush)
                         painter.drawRect(rect)
                         painter.setPen(Qt.NoPen)
-                    painter.fillRect(rect, color)
         painter.setPen(QPen(QColor("#475569"), 1))
         for point_idx in range(total_points):
-            x = plot.left() + (plot.width() * point_idx / max(1, total_points - 1))
-            painter.drawText(int(x - 4), plot.bottom() + 22, str(point_idx + 1))
+            x_value = plot.left() + (plot.width() * point_idx / max(1, total_points - 1))
+            painter.drawText(int(x_value - 4), plot.bottom() + 22, str(point_idx + 1))
+
+    def paint_heatmap(self, painter: QPainter, plot: QRectF, colors: list[str], has_focus: bool) -> None:
+        rows = max(8, min(18, self.series_count * 3))
+        cols = max(8, min(18, self.group_count * 3))
+        top_dendro_h = plot.height() * 0.16
+        left_dendro_w = plot.width() * 0.12
+        top_bar_h = plot.height() * 0.045
+        left_bar_w = plot.width() * 0.03
+        matrix = QRectF(
+            plot.left() + left_dendro_w + left_bar_w + 8,
+            plot.top() + top_dendro_h + top_bar_h + 8,
+            plot.width() - left_dendro_w - left_bar_w - 28,
+            plot.height() - top_dendro_h - top_bar_h - 28,
+        )
+        cell_w = matrix.width() / cols
+        cell_h = matrix.height() / rows
+
+        painter.setPen(QPen(QColor("#111827"), 1.2))
+        cluster_w = matrix.width() / 4
+        top_base = matrix.top() - 8
+        top_mid = top_base - top_dendro_h * 0.45
+        top_high = top_base - top_dendro_h * 0.82
+        for idx in range(4):
+            center_x = matrix.left() + cluster_w * idx + cluster_w / 2
+            painter.drawLine(int(center_x), int(top_base), int(center_x), int(top_mid))
+        for idx in range(0, 4, 2):
+            left_x = matrix.left() + cluster_w * idx + cluster_w / 2
+            right_x = matrix.left() + cluster_w * (idx + 1) + cluster_w / 2
+            painter.drawLine(int(left_x), int(top_mid), int(right_x), int(top_mid))
+            painter.drawLine(int((left_x + right_x) / 2), int(top_mid), int((left_x + right_x) / 2), int(top_high))
+        painter.drawLine(int(matrix.left() + cluster_w), int(top_high), int(matrix.left() + cluster_w * 3), int(top_high))
+
+        left_base = matrix.left() - 8
+        left_mid = left_base - left_dendro_w * 0.45
+        left_high = left_base - left_dendro_w * 0.82
+        cluster_h = matrix.height() / 4
+        for idx in range(4):
+            center_y = matrix.top() + cluster_h * idx + cluster_h / 2
+            painter.drawLine(int(left_base), int(center_y), int(left_mid), int(center_y))
+        for idx in range(0, 4, 2):
+            top_y = matrix.top() + cluster_h * idx + cluster_h / 2
+            bottom_y = matrix.top() + cluster_h * (idx + 1) + cluster_h / 2
+            painter.drawLine(int(left_mid), int(top_y), int(left_mid), int(bottom_y))
+            painter.drawLine(int(left_high), int((top_y + bottom_y) / 2), int(left_mid), int((top_y + bottom_y) / 2))
+        painter.drawLine(int(left_high), int(matrix.top() + cluster_h), int(left_high), int(matrix.top() + cluster_h * 3))
+
+        top_bar = QRectF(matrix.left(), matrix.top() - top_bar_h - 2, matrix.width(), top_bar_h)
+        left_bar = QRectF(matrix.left() - left_bar_w - 2, matrix.top(), left_bar_w, matrix.height())
+        for col in range(cols):
+            color = self.effective_color(col, colors, has_focus)
+            rect = QRectF(top_bar.left() + col * cell_w, top_bar.top(), cell_w, top_bar.height())
+            painter.fillRect(rect, color)
+        for row in range(rows):
+            color = self.effective_color(row, colors, has_focus)
+            rect = QRectF(left_bar.left(), left_bar.top() + row * cell_h, left_bar.width(), cell_h)
+            painter.fillRect(rect, color)
+
+        painter.setPen(QPen(QColor("#E5E7EB"), 0.8))
+        for row in range(rows):
+            base_color = self.effective_color(row, colors, has_focus)
+            for col in range(cols):
+                wave = 0.5 + 0.5 * math.sin((row + 1) * 0.48 + (col + 1) * 0.35)
+                lift = 0.92 + 0.08 * wave
+                cell_color = QColor(
+                    clamp_channel(255 - (255 - base_color.red()) * lift),
+                    clamp_channel(255 - (255 - base_color.green()) * lift),
+                    clamp_channel(255 - (255 - base_color.blue()) * lift),
+                    255,
+                )
+                if (row + col) % 13 == 0:
+                    cell_color = QColor(
+                        clamp_channel(255 - (255 - base_color.red()) * 0.97),
+                        clamp_channel(255 - (255 - base_color.green()) * 0.97),
+                        clamp_channel(255 - (255 - base_color.blue()) * 0.97),
+                        255,
+                    )
+                rect = QRectF(matrix.left() + col * cell_w, matrix.top() + row * cell_h, cell_w, cell_h)
+                painter.fillRect(rect, cell_color)
+                painter.drawRect(rect)
+
+        painter.setPen(QPen(QColor("#475569"), 1))
+        painter.drawText(int(matrix.left()), int(plot.bottom() + 18), "Clustered heatmap preview")
+
+    def paint_phylo(self, painter: QPainter, plot: QRectF, colors: list[str], has_focus: bool) -> None:
+        root, leaves, max_distance = get_preview_phylo_layout()
+        if not leaves:
+            painter.setPen(QPen(QColor("#475569"), 1))
+            painter.drawText(plot, Qt.AlignCenter, "Phylogenetic preview unavailable")
+            return
+
+        leaf_count = len(leaves)
+        legend_items = max(1, len(colors))
+        legend_columns = max(1, math.ceil(legend_items / 8))
+        legend_width = 132 + max(0, legend_columns - 1) * 120
+        circle_rect = plot.adjusted(26, 18, -(legend_width + 40), -34)
+        center = QPointF(circle_rect.center().x() - 24, circle_rect.center().y() - 12)
+        base_size = min(circle_rect.width(), circle_rect.height()) * 0.86
+        gap_degrees = 62.0
+        span_degrees = 360.0 - gap_degrees
+        start_angle = 118.0
+        end_angle = start_angle + span_degrees
+        title_radius = base_size * 0.18
+        tree_inner_radius = title_radius + 20
+        tree_outer_radius = base_size * 0.34
+        ring_count = max(4, min(7, self.series_count + 1))
+        ring_width = base_size * 0.048
+        label_radius = tree_outer_radius + ring_count * ring_width + 12
+
+        def leaf_angle(index: float) -> float:
+            return start_angle + span_degrees * (index / max(1, leaf_count))
+
+        def point_at(radius: float, angle_deg: float) -> QPointF:
+            angle_rad = math.radians(angle_deg)
+            return QPointF(
+                center.x() + math.cos(angle_rad) * radius,
+                center.y() + math.sin(angle_rad) * radius,
+            )
+
+        def radius_for(distance: float) -> float:
+            return tree_inner_radius + (tree_outer_radius - tree_inner_radius) * (distance / max_distance)
+
+        def node_angle(node: dict[str, object]) -> float:
+            start = float(node['leaf_start'])
+            end = float(node['leaf_end'])
+            return leaf_angle((start + end) / 2.0)
+
+        def arc_path(radius: float, start_deg: float, end_deg: float) -> QPainterPath:
+            rect = QRectF(center.x() - radius, center.y() - radius, radius * 2.0, radius * 2.0)
+            path = QPainterPath()
+            path.moveTo(point_at(radius, start_deg))
+            path.arcTo(rect, -start_deg, -(end_deg - start_deg))
+            return path
+
+        palette_hexes = colors or ["#2563EB", "#DC2626", "#059669", "#D97706", "#7C3AED"]
+        palette_colors: list[QColor] = []
+        for hex_code in palette_hexes:
+            color = self.preview_color(str(hex_code))
+            if not color.isValid():
+                color = QColor("#2563EB")
+            color.setAlpha(255)
+            palette_colors.append(color)
+
+        def lighten_color(color: QColor, strength: float) -> QColor:
+            lifted = QColor(
+                clamp_channel(255 - (255 - color.red()) * strength),
+                clamp_channel(255 - (255 - color.green()) * strength),
+                clamp_channel(255 - (255 - color.blue()) * strength),
+                255,
+            )
+            return lifted
+
+        def palette_color(index: int) -> QColor:
+            return QColor(palette_colors[index % len(palette_colors)])
+
+        def draw_subtree(node: dict[str, object]) -> None:
+            children = node.get('children', [])
+            if not children:
+                return
+            node_radius = radius_for(float(node['distance']))
+            child_angles = [node_angle(child) for child in children]
+            if len(children) > 1:
+                painter.drawPath(arc_path(node_radius, child_angles[0], child_angles[-1]))
+            for child, angle_deg in zip(children, child_angles):
+                child_radius = radius_for(float(child['distance']))
+                painter.drawLine(point_at(node_radius, angle_deg), point_at(child_radius, angle_deg))
+                draw_subtree(child)
+
+        painter.setPen(QPen(QColor('#111827'), 1.3, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        painter.setBrush(Qt.NoBrush)
+        draw_subtree(root)
+
+        painter.setPen(QPen(QColor('#E5E7EB'), 1.0))
+        painter.setBrush(QColor('#FFFFFF'))
+        painter.drawEllipse(center, title_radius, title_radius)
+        painter.setPen(QPen(QColor('#475569'), 1))
+        painter.drawText(
+            QRectF(center.x() - title_radius, center.y() - title_radius * 0.55, title_radius * 2, title_radius * 1.1),
+            Qt.AlignCenter,
+            'Tree',
+        )
+
+        for ring_index in range(ring_count):
+            radius_in = tree_outer_radius + ring_index * ring_width + 4
+            radius_out = radius_in + ring_width - 2
+            mid_radius = (radius_in + radius_out) / 2.0
+            arc_rect = QRectF(center.x() - mid_radius, center.y() - mid_radius, mid_radius * 2.0, mid_radius * 2.0)
+            pen_width = max(2.0, ring_width - 3.0)
+            for leaf_index, leaf in enumerate(leaves):
+                start_deg = leaf_angle(leaf_index)
+                end_deg = leaf_angle(leaf_index + 1)
+                base_index = (leaf_index + ring_index) % len(palette_colors)
+                base_color = palette_color(base_index)
+                if ring_index == 0:
+                    tile_color = QColor(base_color)
+                else:
+                    strength = 0.9 - min(0.24, ring_index * 0.035)
+                    strength += 0.04 * abs(math.sin((leaf_index + 1) * 0.52 + ring_index * 0.73))
+                    strength = max(0.68, min(0.96, strength))
+                    tile_color = lighten_color(base_color, strength)
+                painter.setPen(QPen(tile_color, pen_width, Qt.SolidLine, Qt.FlatCap, Qt.RoundJoin))
+                painter.drawArc(arc_rect, int(-end_deg * 16), int((end_deg - start_deg) * 16))
+            painter.setPen(QPen(QColor('#E2E8F0'), 0.5))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(center, mid_radius, mid_radius)
+
+        painter.setPen(QPen(QColor('#334155'), 0.85))
+        for leaf_index, leaf in enumerate(leaves):
+            angle_deg = leaf_angle(leaf_index + 0.5)
+            label = str(leaf.get('name') or f'L{leaf_index + 1}')
+            label_point = point_at(label_radius, angle_deg)
+            text_angle = angle_deg + 90.0
+            right_side = math.cos(math.radians(angle_deg)) >= 0
+            if not right_side:
+                text_angle += 180.0
+            painter.save()
+            painter.translate(label_point)
+            painter.rotate(text_angle)
+            if right_side:
+                text_rect = QRectF(4, -7, 52, 14)
+                alignment = Qt.AlignLeft | Qt.AlignVCenter
+            else:
+                text_rect = QRectF(-56, -7, 52, 14)
+                alignment = Qt.AlignRight | Qt.AlignVCenter
+            painter.drawText(text_rect, alignment, label)
+            painter.restore()
+
+        legend_x = circle_rect.right() + 18
+        legend_y = plot.top() + 18
+        painter.setPen(QPen(QColor('#475569'), 1))
+        painter.drawText(QRectF(legend_x, legend_y - 12, legend_width - 12, 14), Qt.AlignLeft | Qt.AlignVCenter, 'Circular tracks')
+        for idx in range(len(palette_colors)):
+            column = idx // 8
+            row = idx % 8
+            item_x = legend_x + column * 120
+            item_y = legend_y + row * 18
+            swatch_color = palette_color(idx)
+            painter.fillRect(QRectF(item_x, item_y, 12, 12), swatch_color)
+            painter.setPen(QPen(QColor('#CBD5E1'), 0.8))
+            painter.drawRect(QRectF(item_x, item_y, 12, 12))
+            painter.setPen(QPen(QColor('#475569'), 1))
+            painter.drawText(QRectF(item_x + 18, item_y - 1, 96, 14), Qt.AlignLeft | Qt.AlignVCenter, f'Track {idx + 1}')
+
+        painter.setPen(QPen(QColor('#475569'), 1))
+        painter.drawText(int(plot.left()), int(plot.bottom() + 18), 'Circular phylogenetic heatmap preview')
+
+
+    def paint_map(self, painter: QPainter, plot: QRectF, colors: list[str], has_focus: bool) -> None:
+        shapes = load_china_preview_shapes()
+        if not shapes:
+            painter.setPen(QPen(QColor("#475569"), 1))
+            painter.drawText(plot, Qt.AlignCenter, "China map preview unavailable")
+            return
+
+        def project_point(lon: float, lat: float) -> tuple[float, float]:
+            lon_rad = math.radians(lon)
+            lat_clamped = max(-85.0, min(85.0, lat))
+            lat_rad = math.radians(lat_clamped)
+            mercator_y = math.log(math.tan(math.pi / 4.0 + lat_rad / 2.0))
+            return lon_rad, mercator_y
+
+        projected_shapes = [[project_point(lon, lat) for lon, lat in shape] for shape in shapes]
+        min_x = min(point[0] for shape in projected_shapes for point in shape)
+        max_x = max(point[0] for shape in projected_shapes for point in shape)
+        min_y = min(point[1] for shape in projected_shapes for point in shape)
+        max_y = max(point[1] for shape in projected_shapes for point in shape)
+        bounds_w = max(max_x - min_x, 1e-6)
+        bounds_h = max(max_y - min_y, 1e-6)
+
+        content_rect = plot.adjusted(34, 12, -34, -30)
+        aspect = bounds_w / bounds_h
+        draw_w = content_rect.width()
+        draw_h = draw_w / aspect
+        if draw_h > content_rect.height():
+            draw_h = content_rect.height()
+            draw_w = draw_h * aspect
+        draw_w *= 0.9
+        draw_h *= 0.9
+        map_rect = QRectF(
+            content_rect.center().x() - draw_w / 2.0,
+            content_rect.center().y() - draw_h / 2.0,
+            draw_w,
+            draw_h,
+        )
+
+        scale = min(map_rect.width() / bounds_w, map_rect.height() / bounds_h)
+        offset_x = map_rect.left() + (map_rect.width() - bounds_w * scale) / 2.0
+        offset_y = map_rect.top() + (map_rect.height() - bounds_h * scale) / 2.0
+
+        def map_point(lon: float, lat: float) -> QPointF:
+            px, py = project_point(lon, lat)
+            return QPointF(
+                offset_x + (px - min_x) * scale,
+                offset_y + (max_y - py) * scale,
+            )
+
+        border_pen = QPen(QColor('#CBD5E1'), 0.55)
+        outer_pen = QPen(QColor('#94A3B8'), 0.9)
+
+        painter.setPen(border_pen)
+        for index, shape in enumerate(shapes):
+            if len(shape) < 3:
+                continue
+            path = QPainterPath()
+            path.moveTo(map_point(*shape[0]))
+            for lon, lat in shape[1:]:
+                path.lineTo(map_point(lon, lat))
+            path.closeSubpath()
+            painter.fillPath(path, self.effective_color(index, colors, has_focus))
+            painter.drawPath(path)
+
+        painter.setPen(outer_pen)
+        painter.setBrush(Qt.NoBrush)
+        for shape in shapes:
+            if len(shape) < 3:
+                continue
+            path = QPainterPath()
+            path.moveTo(map_point(*shape[0]))
+            for lon, lat in shape[1:]:
+                path.lineTo(map_point(lon, lat))
+            path.closeSubpath()
+            painter.drawPath(path)
+
+        painter.setPen(QPen(QColor("#475569"), 1))
+        painter.drawText(int(plot.left()), int(plot.bottom() + 18), "China map preview")
+
 
     def draw_marker(self, painter: QPainter, point: QPointF, color: QColor, highlighted: bool = False) -> None:
         painter.setPen(QPen(color, 1.2))
@@ -646,6 +1159,7 @@ class ChartPreviewWidget(QWidget):
             painter.drawPath(path)
             return
         painter.drawEllipse(point, size / 2, size / 2)
+
 class PaletteCreateDialog(QDialog):
     def __init__(self, colors: list[ColorEntry], parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -708,6 +1222,153 @@ class PaletteCreateDialog(QDialog):
     def submit(self, output_key: str) -> None:
         self._output_key = output_key
         self.accept()
+
+class AdvancedPreviewDialog(QDialog):
+    def __init__(self, preview_state: dict[str, object], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Advanced Preview")
+        self.resize(760, 980)
+        self.setMinimumSize(720, 900)
+        self.preview_state = preview_state.copy()
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("Mode"))
+        self.normal_button = QPushButton("Normal")
+        self.normal_button.setCheckable(True)
+        self.colorblind_button = QPushButton("Colorblind")
+        self.colorblind_button.setCheckable(True)
+        self.colorblind_type_combo = QComboBox()
+        self.colorblind_type_combo.addItems(["Protan", "Deutan", "Tritan"])
+        self.grayscale_button = QPushButton("Grayscale")
+        self.grayscale_button.setCheckable(True)
+        self.normal_button.clicked.connect(lambda: self.set_preview_mode("normal"))
+        self.colorblind_button.clicked.connect(self.activate_colorblind_preview)
+        self.colorblind_type_combo.currentIndexChanged.connect(self.on_colorblind_type_changed)
+        self.grayscale_button.clicked.connect(lambda: self.set_preview_mode("grayscale"))
+        mode_row.addWidget(self.normal_button)
+        mode_row.addWidget(self.colorblind_button)
+        mode_row.addWidget(self.colorblind_type_combo)
+        mode_row.addWidget(self.grayscale_button)
+        mode_row.addStretch(1)
+        layout.addLayout(mode_row)
+
+        chart_row = QHBoxLayout()
+        chart_row.addWidget(QLabel("Chart"))
+        self.chart_buttons: dict[str, QPushButton] = {}
+        for label, value in (("Line", "line"), ("Bar", "bar"), ("Scatter", "scatter"), ("Clustered", "heatmap"), ("Circular", "phylo"), ("Map", "map")):
+            button = QPushButton(label)
+            button.setCheckable(True)
+            button.clicked.connect(lambda _checked, chart=value: self.set_chart_type(chart))
+            self.chart_buttons[value] = button
+            chart_row.addWidget(button)
+        chart_row.addStretch(1)
+        layout.addLayout(chart_row)
+
+        metric_row = QHBoxLayout()
+        metric_row.setSpacing(6)
+        metric_row.addWidget(QLabel("Series"))
+        self.series_input = QLineEdit(str(int(self.preview_state.get("series_count", 5))))
+        self.series_input.setFixedWidth(52)
+        self.series_input.editingFinished.connect(self.refresh_preview)
+        metric_row.addWidget(self.series_input)
+        metric_row.addWidget(QLabel("Group"))
+        self.group_input = QLineEdit(str(int(self.preview_state.get("group_count", 4))))
+        self.group_input.setFixedWidth(52)
+        self.group_input.editingFinished.connect(self.refresh_preview)
+        metric_row.addWidget(self.group_input)
+        metric_row.addWidget(QLabel("Colors"))
+        self.color_count_input = QLineEdit(str(max(1, len(list(self.preview_state.get("colors", []))))))
+        self.color_count_input.setFixedWidth(52)
+        self.color_count_input.editingFinished.connect(self.refresh_preview)
+        metric_row.addWidget(self.color_count_input)
+        metric_row.addStretch(1)
+        layout.addLayout(metric_row)
+
+        hint = QLabel("???Advanced Preview ?????? Cart ??????Series / Group / Colors ?????????")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #475569; background: transparent;")
+        layout.addWidget(hint)
+
+        self.chart_preview = ChartPreviewWidget()
+        self.chart_preview.setMinimumHeight(520)
+        layout.addWidget(self.chart_preview, 1)
+
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.accept)
+        layout.addWidget(close_button)
+
+        preview_mode = str(self.preview_state.get("preview_mode", "normal"))
+        if preview_mode == "grayscale":
+            self.grayscale_button.setChecked(True)
+        elif preview_mode.startswith("colorblind"):
+            self.colorblind_button.setChecked(True)
+            mapping = {"colorblind_protan": 0, "colorblind_deutan": 1, "colorblind_tritan": 2}
+            self.colorblind_type_combo.setCurrentIndex(mapping.get(preview_mode, 1))
+        else:
+            self.normal_button.setChecked(True)
+        self.sync_buttons()
+        self.refresh_preview()
+
+    def set_chart_type(self, chart_type: str) -> None:
+        self.preview_state["chart_type"] = chart_type
+        self.sync_buttons()
+        self.refresh_preview()
+
+    def set_preview_mode(self, preview_mode: str) -> None:
+        self.preview_state["preview_mode"] = preview_mode
+        self.normal_button.setChecked(preview_mode == "normal")
+        self.colorblind_button.setChecked(preview_mode.startswith("colorblind"))
+        self.grayscale_button.setChecked(preview_mode == "grayscale")
+        self.refresh_preview()
+
+    def activate_colorblind_preview(self) -> None:
+        mapping = {0: "colorblind_protan", 1: "colorblind_deutan", 2: "colorblind_tritan"}
+        self.set_preview_mode(mapping.get(self.colorblind_type_combo.currentIndex(), "colorblind_deutan"))
+
+    def on_colorblind_type_changed(self, _index: int) -> None:
+        if str(self.preview_state.get("preview_mode", "normal")).startswith("colorblind"):
+            self.activate_colorblind_preview()
+
+    def sync_buttons(self) -> None:
+        chart_type = str(self.preview_state.get("chart_type", "line"))
+        for value, button in self.chart_buttons.items():
+            button.setChecked(value == chart_type)
+
+    def refresh_preview(self) -> None:
+        raw_colors = list(self.preview_state.get("colors", []))
+        base_colors: list[str] = []
+        for value in raw_colors:
+            try:
+                base_colors.append(normalize_hex_code(str(value)))
+            except ValueError:
+                continue
+        color_count = self.read_int(self.color_count_input.text(), max(1, len(base_colors) or 1), 1, 64)
+        colors = [base_colors[index % len(base_colors)] for index in range(color_count)] if base_colors else []
+        series_count = self.read_int(self.series_input.text(), int(self.preview_state.get("series_count", 5)), 1, 24)
+        group_count = self.read_int(self.group_input.text(), int(self.preview_state.get("group_count", 4)), 2, 48)
+        self.chart_preview.set_preview_state(
+            colors,
+            str(self.preview_state.get("chart_type", "line")),
+            series_count,
+            group_count,
+            int(self.preview_state.get("line_width", 2)),
+            int(self.preview_state.get("point_size", 5)),
+            str(self.preview_state.get("marker_shape", "circle")),
+            int(self.preview_state.get("alpha", 100)),
+            str(self.preview_state.get("preview_mode", "normal")),
+            set(self.preview_state.get("highlighted_indices", set())),
+        )
+
+    def read_int(self, text: str, fallback: int, minimum: int, maximum: int) -> int:
+        try:
+            value = int(text)
+        except ValueError:
+            value = fallback
+        return max(minimum, min(maximum, value))
 
 class MainWindow(QMainWindow):
     def __init__(self, base_dir: Path) -> None:
@@ -1122,18 +1783,25 @@ class MainWindow(QMainWindow):
         chart_row.addWidget(self.line_button)
         chart_row.addWidget(self.bar_button)
         chart_row.addWidget(self.scatter_button)
+        advanced_preview_button = QPushButton("Advanced Preview")
+        advanced_preview_button.clicked.connect(self.open_advanced_preview_dialog)
         chart_row.addSpacing(12)
-        chart_row.addWidget(QLabel("Point"))
+        chart_row.addWidget(advanced_preview_button)
+        chart_row.addStretch(1)
+        layout.addLayout(chart_row)
+        shape_row = QHBoxLayout()
+        shape_row.setSpacing(6)
+        shape_row.addWidget(QLabel("Point"))
         self.shape_circle_button = QPushButton("Circle")
         self.shape_square_button = QPushButton("Square")
         self.shape_triangle_button = QPushButton("Triangle")
         for button, value in ((self.shape_circle_button, "circle"), (self.shape_square_button, "square"), (self.shape_triangle_button, "triangle")):
             button.setCheckable(True)
             button.clicked.connect(lambda _checked, marker=value: self.set_marker_shape(marker))
-            chart_row.addWidget(button)
+            shape_row.addWidget(button)
         self.shape_circle_button.setChecked(True)
-        chart_row.addStretch(1)
-        layout.addLayout(chart_row)
+        shape_row.addStretch(1)
+        layout.addLayout(shape_row)
         metric_row = QHBoxLayout()
         metric_row.setSpacing(6)
         metric_row.addWidget(QLabel("Series"))
@@ -1177,6 +1845,22 @@ class MainWindow(QMainWindow):
             self.library_label.setText(f"Library: {self.config.library_dir}")
         if self.config.materials_dir or self.config.library_dir:
             self.reload_palettes()
+        if not self.config.welcome_seen:
+            QTimer.singleShot(0, self.show_first_run_guide)
+    def show_first_run_guide(self) -> None:
+        message = (
+            "\u57fa\u7840\u64cd\u4f5c\n\n"
+            "1. \u5148\u9009\u62e9 Materials \u548c Library \u6587\u4ef6\u5939\u3002\n"
+            "2. \u5de6\u4fa7\u6d4f\u89c8 palette\uff0c\u5de6\u952e\u67e5\u770b\uff0c\u53f3\u952e\u505a\u5bfc\u5165\u3001\u5220\u9664\u3001\u63d0\u53d6\u3002\n"
+            "3. \u4e2d\u95f4\u5de6\u952e\u590d\u5236\u989c\u8272\uff0c\u53f3\u952e\u52a0\u5165\u53f3\u4fa7\u62fc\u914d\u533a\u3002\n"
+            "4. \u53f3\u4fa7\u53ef\u62d6\u62fd\u6392\u5e8f\uff0c\u518d\u4fdd\u5b58\u6216\u5bfc\u51fa\u3002\n"
+            "5. \u4e0b\u65b9 Preview \u53ef\u5207\u6362\u666e\u901a\u56fe\u3001\u70ed\u56fe\u3001\u7cfb\u7edf\u8fdb\u5316\u548c\u5730\u56fe\u793a\u610f\u3002\n\n"
+            "PDF \u5efa\u8bae\u901a\u8fc7\u8be6\u60c5\u533a\u7684 Open PDF Extractor \u8fdb\u5165\u4e13\u95e8\u63d0\u53d6\u7a97\u53e3\u3002"
+        )
+        QMessageBox.information(self, "Welcome", message)
+        self.config.welcome_seen = True
+        self.config.save()
+
     def choose_materials_dir(self) -> None:
         selected = QFileDialog.getExistingDirectory(
             self, "Choose Materials Folder", self.config.materials_dir or str(self.base_dir)
@@ -1488,6 +2172,7 @@ class MainWindow(QMainWindow):
     def on_sort_or_group_changed(self) -> None:
         self.sort_mode = self.sort_combo.currentText().lower().replace(" ", "_")
         self.group_mode = self.group_combo.currentText().lower().replace(" ", "_")
+        self.populate_palette_tree()
     def reload_palettes(self) -> None:
         self.palettes = []
         if self.config.materials_dir:
@@ -1528,6 +2213,9 @@ class MainWindow(QMainWindow):
         palettes_dir = library_dir / "palettes"
         if palettes_dir.exists():
             palettes.extend(scan_palettes(palettes_dir, "library"))
+        generated_dir = library_dir / "generated"
+        if generated_dir.exists():
+            palettes.extend(scan_palettes(generated_dir, "library"))
         gradient_dir = library_dir / "exports" / "originlab_gradient"
         if gradient_dir.exists():
             palettes.extend(scan_palettes(gradient_dir, "library"))
@@ -2548,6 +3236,47 @@ class MainWindow(QMainWindow):
         self.scatter_button.setChecked(chart_type == "scatter")
         self.update_chart_preview()
 
+    def get_cart_hex_colors(self) -> list[str]:
+        colors: list[str] = []
+        if hasattr(self, "selected_list"):
+            for index in range(self.selected_list.count()):
+                item = self.selected_list.item(index)
+                data = item.data(Qt.UserRole) if item is not None else None
+                if isinstance(data, ColorEntry):
+                    colors.append(data.hex_code)
+        if not colors:
+            colors = [color.hex_code for color in self.selected_colors]
+        normalized: list[str] = []
+        for value in colors:
+            try:
+                normalized.append(normalize_hex_code(str(value)))
+            except ValueError:
+                continue
+        return normalized
+
+    def collect_preview_state(self, chart_type: str | None = None) -> dict[str, object]:
+        highlighted_indices = {index.row() for index in self.selected_list.selectedIndexes()}
+        return {
+            "colors": self.get_cart_hex_colors(),
+            "chart_type": chart_type or self.chart_type,
+            "series_count": self.read_int(self.series_input.text() if hasattr(self, "series_input") else "5", 5, 1, 8),
+            "group_count": self.read_int(self.group_input.text() if hasattr(self, "group_input") else "4", 4, 2, 12),
+            "line_width": self.read_int(self.line_width_input.text() if hasattr(self, "line_width_input") else "2", 2, 1, 8),
+            "point_size": self.read_int(self.point_size_input.text() if hasattr(self, "point_size_input") else "5", 5, 2, 16),
+            "marker_shape": self.marker_shape,
+            "alpha": self.read_int(self.alpha_input.text() if hasattr(self, "alpha_input") else "100", 100, 10, 100),
+            "preview_mode": self.preview_mode,
+            "highlighted_indices": highlighted_indices,
+        }
+
+    def open_advanced_preview_dialog(self) -> None:
+        state = self.collect_preview_state(chart_type="heatmap")
+        if not state["colors"]:
+            QMessageBox.information(self, "Cart Empty", "Add colors to the Cart first. Advanced Preview uses the Cart order directly.")
+            return
+        dialog = AdvancedPreviewDialog(state, self)
+        dialog.exec()
+
     def activate_colorblind_preview(self) -> None:
         mapping = {0: "colorblind_protan", 1: "colorblind_deutan", 2: "colorblind_tritan"}
         self.set_preview_mode(mapping.get(self.preview_colorblind_type_combo.currentIndex(), "colorblind_deutan"))
@@ -2565,49 +3294,18 @@ class MainWindow(QMainWindow):
         self.update_chart_preview()
 
     def update_chart_preview(self) -> None:
-        colors = [color.hex_code for color in self.selected_colors]
-        highlighted_indices = {index.row() for index in self.selected_list.selectedIndexes()}
-        series_count = self.read_int(
-            self.series_input.text() if hasattr(self, "series_input") else "5",
-            5,
-            1,
-            8,
-        )
-        group_count = self.read_int(
-            self.group_input.text() if hasattr(self, "group_input") else "4",
-            4,
-            2,
-            12,
-        )
-        line_width = self.read_int(
-            self.line_width_input.text() if hasattr(self, "line_width_input") else "2",
-            2,
-            1,
-            8,
-        )
-        point_size = self.read_int(
-            self.point_size_input.text() if hasattr(self, "point_size_input") else "5",
-            5,
-            2,
-            16,
-        )
-        alpha = self.read_int(
-            self.alpha_input.text() if hasattr(self, "alpha_input") else "100",
-            100,
-            10,
-            100,
-        )
+        state = self.collect_preview_state()
         self.chart_preview.set_preview_state(
-            colors,
-            self.chart_type,
-            series_count,
-            group_count,
-            line_width,
-            point_size,
-            self.marker_shape,
-            alpha,
-            self.preview_mode,
-            highlighted_indices,
+            list(state["colors"]),
+            str(state["chart_type"]),
+            int(state["series_count"]),
+            int(state["group_count"]),
+            int(state["line_width"]),
+            int(state["point_size"]),
+            str(state["marker_shape"]),
+            int(state["alpha"]),
+            str(state["preview_mode"]),
+            set(state["highlighted_indices"]),
         )
 
     def set_marker_shape(self, marker_shape: str) -> None:
@@ -2643,6 +3341,8 @@ class MainWindow(QMainWindow):
         if app is not None:
             app.closeAllWindows()
             app.quit()
+
+
 
 
 

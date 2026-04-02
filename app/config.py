@@ -13,6 +13,7 @@ class AppConfig:
             "favorite_palettes": [],
             "palette_groups": {},
             "tree_expanded": [],
+            "welcome_seen": False,
         }
         self.load()
 
@@ -113,3 +114,11 @@ class AppConfig:
             values.discard(key)
         self.data["tree_expanded"] = sorted(values)
 
+
+    @property
+    def welcome_seen(self) -> bool:
+        return bool(self.data.get("welcome_seen", False))
+
+    @welcome_seen.setter
+    def welcome_seen(self, value: bool) -> None:
+        self.data["welcome_seen"] = bool(value)
