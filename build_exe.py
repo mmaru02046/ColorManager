@@ -1,5 +1,6 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -10,7 +11,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 ENTRY_FILE = PROJECT_ROOT / "app" / "main.py"
 DIST_DIR = PROJECT_ROOT / "dist"
 BUILD_DIR = PROJECT_ROOT / "build"
-SPEC_FILE = PROJECT_ROOT / "ColorLibraryManager.spec"
+APP_NAME = "ColorManager"
+SPEC_FILE = PROJECT_ROOT / f"{APP_NAME}.spec"
+LEGACY_SPEC_FILE = PROJECT_ROOT / "ColorLibraryManager.spec"
 ICON_FILE = PROJECT_ROOT / "icon.ico"
 
 
@@ -56,7 +59,7 @@ def build_command() -> list[str]:
         "--clean",
         "--windowed",
         "--name",
-        "ColorLibraryManager",
+        APP_NAME,
         "--distpath",
         str(DIST_DIR),
         "--workpath",
@@ -69,8 +72,13 @@ def build_command() -> list[str]:
         "app",
     ]
 
+    asset_dir = PROJECT_ROOT / "app" / "assets"
+    if asset_dir.exists():
+        command.extend(["--add-data", f"{asset_dir}{os.pathsep}app/assets"])
+
     if ICON_FILE.exists():
         command.extend(["--icon", str(ICON_FILE)])
+        command.extend(["--add-data", f"{ICON_FILE}{os.pathsep}."])
 
     for module_name in hidden_imports:
         command.extend(["--hidden-import", module_name])
@@ -89,6 +97,7 @@ def main() -> int:
     remove_path(DIST_DIR)
     remove_path(BUILD_DIR)
     remove_path(SPEC_FILE)
+    remove_path(LEGACY_SPEC_FILE)
 
     command = build_command()
     print("Running:")
@@ -113,7 +122,7 @@ def main() -> int:
         print(f"Build failed with exit code {completed.returncode}.")
         return completed.returncode
 
-    exe_path = DIST_DIR / "ColorLibraryManager" / "ColorLibraryManager.exe"
+    exe_path = DIST_DIR / APP_NAME / f"{APP_NAME}.exe"
     print()
     print("Build finished.")
     print(f"EXE: {exe_path}")

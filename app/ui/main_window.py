@@ -4,6 +4,7 @@ import json
 import math
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal, QUrl, QMimeData, QTimer
 from PySide6.QtGui import QColor, QGuiApplication, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
@@ -351,7 +352,8 @@ PREVIEW_PHYLO_NEWICK = """((((A1:0.05,A2:0.1):0.15,A3:0.25):0.2,(B1:0.3,(B2:0.05
 ((C1:0.1,C2:0.15):0.2,(C3:0.2,C4:0.25):0.3):0.35,
 (((D1:0.05,D2:0.05):0.1,D3:0.2):0.25,(D4:0.3,D5:0.35):0.4):0.45,
 ((E1:0.15,E2:0.2):0.3,E3:0.4):0.5);"""
-CHINA_BOUNDARY_GEOJSON = Path(__file__).resolve().parent.parent / "assets" / "china_boundary.geojson"
+APP_RUNTIME_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))
+CHINA_BOUNDARY_GEOJSON = APP_RUNTIME_ROOT / "app" / "assets" / "china_boundary.geojson"
 _PREVIEW_PHYLO_CACHE: tuple[dict[str, object], list[dict[str, object]], float] | None = None
 _CHINA_PREVIEW_SHAPES_CACHE: list[list[tuple[float, float]]] | None = None
 
@@ -3341,6 +3343,7 @@ class MainWindow(QMainWindow):
         if app is not None:
             app.closeAllWindows()
             app.quit()
+
 
 
 
