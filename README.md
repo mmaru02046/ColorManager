@@ -64,6 +64,11 @@ This project is built around a practical workflow for scientific plotting:
 - 支持日常快速预览和独立的 `Advanced Preview` 高级示意图
 - 支持导出到常见科研工作流以及可复用代码片段
 
+## Map Note / 地图说明
+
+The China map used in preview is a simplified display asset. For presentation purposes, the original source data has been adjusted and the nine-dash line is not shown in the current preview.
+
+预览中使用的中国地图为简化展示素材。出于界面展示需要，当前预览未显示原始数据中的九段线。
 ## Interaction Notes / 交互细节提示
 
 A few palette-generation actions behave differently depending on selection:
@@ -166,4 +171,5 @@ License file:
 
 - `PolyForm Noncommercial 1.0.0`
 - see [LICENSE](LICENSE)
+
 
