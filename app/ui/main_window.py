@@ -1851,6 +1851,10 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self.show_first_run_guide)
     def show_first_run_guide(self) -> None:
         message = (
+            "\u91cd\u8981\u63d0\u793a\n\n"
+            "\u672c\u8f6f\u4ef6\u7531 [Alsophila] \u4e2a\u4eba\u5f00\u53d1\uff0c\u5b8c\u5168\u514d\u8d39\u5e76\u5728 GitHub \u975e\u5546\u7528\u5f00\u6e90\u3002"
+            "\u5982\u679c\u60a8\u662f\u4ed8\u8d39\u8d2d\u4e70\u7684\u672c\u8f6f\u4ef6\uff0c\u8bf4\u660e\u60a8\u5df2\u88ab\u9a97\uff0c"
+            "\u8bf7\u7acb\u5373\u9000\u6b3e\u5e76\u4e3e\u62a5\u5356\u5bb6\uff01\n\n"
             "\u57fa\u7840\u64cd\u4f5c\n\n"
             "1. \u5148\u9009\u62e9 Materials \u548c Library \u6587\u4ef6\u5939\u3002\n"
             "2. \u5de6\u4fa7\u6d4f\u89c8 palette\uff0c\u5de6\u952e\u67e5\u770b\uff0c\u53f3\u952e\u505a\u5bfc\u5165\u3001\u5220\u9664\u3001\u63d0\u53d6\u3002\n"
