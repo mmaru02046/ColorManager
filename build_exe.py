@@ -6,15 +6,16 @@ import subprocess
 import sys
 from pathlib import Path
 
+from app.branding import APP_AUTHOR, APP_COPYRIGHT, APP_NAME, APP_VERSION, APP_VERSION_INFO
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 ENTRY_FILE = PROJECT_ROOT / "app" / "main.py"
 DIST_DIR = PROJECT_ROOT / "dist"
 BUILD_DIR = PROJECT_ROOT / "build"
-APP_NAME = "ColorManager"
 SPEC_FILE = PROJECT_ROOT / f"{APP_NAME}.spec"
 LEGACY_SPEC_FILE = PROJECT_ROOT / "ColorLibraryManager.spec"
 ICON_FILE = PROJECT_ROOT / "icon.ico"
+VERSION_INFO_FILE = PROJECT_ROOT / "version_info.txt"
 
 
 def remove_path(path: Path) -> None:
@@ -57,6 +58,7 @@ def build_command() -> list[str]:
     command = resolve_pyinstaller_command() + [
         "--noconfirm",
         "--clean",
+        "--onefile",
         "--windowed",
         "--name",
         APP_NAME,
@@ -79,6 +81,8 @@ def build_command() -> list[str]:
     if ICON_FILE.exists():
         command.extend(["--icon", str(ICON_FILE)])
         command.extend(["--add-data", f"{ICON_FILE}{os.pathsep}."])
+    if VERSION_INFO_FILE.exists():
+        command.extend(["--version-file", str(VERSION_INFO_FILE)])
 
     for module_name in hidden_imports:
         command.extend(["--hidden-import", module_name])
@@ -90,10 +94,48 @@ def build_command() -> list[str]:
     return command
 
 
+def ensure_version_info_file() -> None:
+    major, minor, patch, build = APP_VERSION_INFO
+    content = f"""VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=({major}, {minor}, {patch}, {build}),
+    prodvers=({major}, {minor}, {patch}, {build}),
+    mask=0x3F,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo(
+      [
+        StringTable(
+          u'080404B0',
+          [
+            StringStruct(u'CompanyName', u'{APP_AUTHOR}'),
+            StringStruct(u'FileDescription', u'{APP_NAME}'),
+            StringStruct(u'FileVersion', u'{APP_VERSION}'),
+            StringStruct(u'InternalName', u'{APP_NAME}'),
+            StringStruct(u'LegalCopyright', u'{APP_COPYRIGHT}'),
+            StringStruct(u'OriginalFilename', u'{APP_NAME}.exe'),
+            StringStruct(u'ProductName', u'{APP_NAME}'),
+            StringStruct(u'ProductVersion', u'{APP_VERSION}')
+          ]
+        )
+      ]
+    ),
+    VarFileInfo([VarStruct(u'Translation', [2052, 1200])])
+  ]
+)"""
+    VERSION_INFO_FILE.write_text(content, encoding="utf-8")
+
+
 def main() -> int:
     if not ENTRY_FILE.exists():
         raise FileNotFoundError(f"Entry file not found: {ENTRY_FILE}")
 
+    ensure_version_info_file()
     remove_path(DIST_DIR)
     remove_path(BUILD_DIR)
     remove_path(SPEC_FILE)
@@ -125,9 +167,14 @@ def main() -> int:
     exe_path = DIST_DIR / APP_NAME / f"{APP_NAME}.exe"
     print()
     print("Build finished.")
+    print(f"APP: {APP_NAME} {APP_VERSION}")
+    print(f"AUTHOR: {APP_AUTHOR}")
+    print(f"COPYRIGHT: {APP_COPYRIGHT}")
     print(f"EXE: {exe_path}")
     if ICON_FILE.exists():
         print(f"ICON: {ICON_FILE}")
+    if VERSION_INFO_FILE.exists():
+        print(f"VERSION FILE: {VERSION_INFO_FILE}")
     return 0
 
 

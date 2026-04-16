@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal, QUrl, QMimeData, QTimer
-from PySide6.QtGui import QColor, QGuiApplication, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QGuiApplication, QIntValidator, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -34,14 +34,32 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSplitter,
+    QStatusBar,
     QVBoxLayout,
     QWidget,
+)
+from app.branding import (
+    APP_AUTHOR,
+    APP_DISPLAY_NAME,
+    APP_TAGLINE,
+    APP_VERSION,
+    STATUS_ROTATION_MESSAGES,
 )
 from app.config import AppConfig
 from app.models import ColorEntry, Palette
 from app.parsers import load_image_grid_palette, load_palette, load_pdf_palette, pdf_page_count, render_pdf_page, scan_palettes
 from app.storage import ensure_directory, save_originlab_pal, save_palette_ase, save_palette_csv, save_palette_json
 from app.ui.pdf_dialog import PdfExtractDialog
+
+
+def set_widget_font(widget: QWidget, pixel_size: int | None = None, bold: bool = False) -> None:
+    font = QFont(widget.font())
+    if pixel_size is not None:
+        font.setPixelSize(pixel_size)
+    font.setBold(bold)
+    widget.setFont(font)
+
+
 class ClickableColorCard(QFrame):
     clicked = Signal(object)
     toggled = Signal(object, bool)
@@ -72,7 +90,8 @@ class ClickableColorCard(QFrame):
         meta_label.setWordWrap(True)
         layout.addWidget(meta_label)
         hint_label = QLabel("左键复制   右键加入拼配区")
-        hint_label.setStyleSheet("color: #64748B; font-size: 12px; background: transparent;")
+        hint_label.setStyleSheet("color: #64748B; background: transparent;")
+        set_widget_font(hint_label, pixel_size=12)
         layout.addWidget(hint_label)
         self.refresh_style()
 
@@ -273,7 +292,7 @@ def rotate_color_hue(hex_code: str, degrees: float, wheel_mode: str = "rgb") -> 
     return rgb_to_hex((red_value * 255.0, green_value * 255.0, blue_value * 255.0))
 
 def build_similar_colors(hex_code: str, wheel_mode: str = "rgb", count: int = 5) -> list[str]:
-    count = max(2, min(9, count))
+    count = max(2, min(20, count))
     colors = [normalize_hex_code(hex_code)]
     step = 18
     distance = 1
@@ -285,7 +304,7 @@ def build_similar_colors(hex_code: str, wheel_mode: str = "rgb", count: int = 5)
     return colors[:count]
 
 def build_complementary_colors(hex_code: str, wheel_mode: str = "rgb", count: int = 4) -> list[str]:
-    count = max(2, min(9, count))
+    count = max(2, min(20, count))
     colors = [normalize_hex_code(hex_code), rotate_color_hue(hex_code, 180, wheel_mode)]
     offsets = [150, 210, 120, 240, 90, 270, 60]
     for offset in offsets:
@@ -298,7 +317,7 @@ def build_interpolated_colors(hex_codes: list[str], count: int) -> list[str]:
     anchors = [normalize_hex_code(value) for value in hex_codes if value]
     if len(anchors) < 2:
         return anchors
-    count = max(len(anchors), min(9, count))
+    count = max(len(anchors), min(20, count))
     segments = len(anchors) - 1
     output: list[str] = []
     for index in range(count):
@@ -340,7 +359,7 @@ def build_tint_ramp_mode(hex_code: str, bias: str, mode: str, steps: int = 5) ->
         return (darker[:-1] + lighter)[:steps]
     return build_interpolated_colors([base, mix_hex_colors(base, white_target, 0.88)], steps)
 def build_diverging_colors(start_hex: str, end_hex: str, steps: int = 5, midpoint_hex: str = "#F4F1EB") -> list[str]:
-    steps = max(3, min(9, steps))
+    steps = max(3, min(20, steps))
     left_count = steps // 2 + 1
     right_count = steps - left_count + 1
     left = build_interpolated_colors([normalize_hex_code(start_hex), midpoint_hex], left_count)
@@ -1389,7 +1408,11 @@ class MainWindow(QMainWindow):
         self.marker_shape = "circle"
         self.preview_mode = "normal"
         self.pending_select_source_path: str | None = None
-        self.setWindowTitle("Color Library Manager")
+        self.status_rotation_messages = list(STATUS_ROTATION_MESSAGES)
+        self.status_rotation_index = 0
+        self.status_rotation_timer = QTimer(self)
+        self.status_rotation_label = QLabel()
+        self.setWindowTitle(f"{APP_DISPLAY_NAME} {APP_VERSION}")
         self.resize(1720, 980)
         self.setAcceptDrops(True)
         self.setStyleSheet(
@@ -1397,7 +1420,6 @@ class MainWindow(QMainWindow):
             QMainWindow, QWidget {
                 background: #E2E8F0;
                 color: #0F172A;
-                font-size: 13px;
             }
             QLabel { color: #0F172A; }
             QLineEdit, QListWidget, QScrollArea, QTreeWidget {
@@ -1433,12 +1455,39 @@ class MainWindow(QMainWindow):
                 border: 1px solid #94A3B8;
                 border-radius: 12px;
             }
+            QStatusBar {
+                background: rgba(248, 250, 252, 0.92);
+                color: #64748B;
+                border-top: 1px solid #CBD5E1;
+            }
+            QStatusBar::item { border: none; }
             """
         )
         self.build_ui()
+        self.setup_status_bar()
         self.sync_lab_color_preview()
         self.load_initial_state()
         self.update_chart_preview()
+
+    def setup_status_bar(self) -> None:
+        status_bar = QStatusBar(self)
+        status_bar.setSizeGripEnabled(False)
+        status_bar.setContentsMargins(8, 0, 8, 0)
+        self.setStatusBar(status_bar)
+        self.status_rotation_label.setStyleSheet("color: #64748B; padding: 0 4px;")
+        set_widget_font(self.status_rotation_label, pixel_size=12)
+        status_bar.addPermanentWidget(self.status_rotation_label, 1)
+        self.status_rotation_timer.setInterval(10000)
+        self.status_rotation_timer.timeout.connect(self.rotate_status_watermark)
+        self.rotate_status_watermark()
+        self.status_rotation_timer.start()
+
+    def rotate_status_watermark(self) -> None:
+        if not self.status_rotation_messages:
+            return
+        message = self.status_rotation_messages[self.status_rotation_index % len(self.status_rotation_messages)]
+        self.status_rotation_label.setText(message)
+        self.status_rotation_index += 1
     def build_ui(self) -> None:
         root = QWidget()
         root_layout = QVBoxLayout(root)
@@ -1516,7 +1565,8 @@ class MainWindow(QMainWindow):
         self.drop_hint_label.setStyleSheet("background: #FFFFFF; color: #475569; border: 1px dashed #94A3B8; border-radius: 10px; padding: 8px;")
         layout.addWidget(self.drop_hint_label)
         title = QLabel("Palettes")
-        title.setStyleSheet("font-size: 18px; font-weight: 700; background: transparent;")
+        title.setStyleSheet("font-weight: 700; background: transparent;")
+        set_widget_font(title, pixel_size=18, bold=True)
         layout.addWidget(title)
 
         filter_row = QHBoxLayout()
@@ -1604,7 +1654,8 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(10)
         self.palette_title = QLabel("Palette Details")
-        self.palette_title.setStyleSheet("font-size: 22px; font-weight: 700; background: transparent;")
+        self.palette_title.setStyleSheet("font-weight: 700; background: transparent;")
+        set_widget_font(self.palette_title, pixel_size=22, bold=True)
         layout.addWidget(self.palette_title)
         self.palette_meta = QLabel("点击左侧色卡后，中间展开颜色。左键复制，右键加入右侧拼配区。")
         self.palette_meta.setWordWrap(True)
@@ -1641,7 +1692,8 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(6)
         title = QLabel("Cart")
-        title.setStyleSheet("font-size: 18px; font-weight: 700; background: transparent;")
+        title.setStyleSheet("font-weight: 700; background: transparent;")
+        set_widget_font(title, pixel_size=18, bold=True)
         layout.addWidget(title)
         info = QLabel("右侧颜色加入这里。拖拽排序后保存，会按当前顺序导出。")
         info.setWordWrap(True)
@@ -1679,7 +1731,8 @@ class MainWindow(QMainWindow):
         button_row.addWidget(gradient_button)
         layout.addLayout(button_row)
         lab_title = QLabel("Color Lab")
-        lab_title.setStyleSheet("font-size: 16px; font-weight: 700; background: transparent;")
+        lab_title.setStyleSheet("font-weight: 700; background: transparent;")
+        set_widget_font(lab_title, pixel_size=16, bold=True)
         lab_row = QHBoxLayout()
         self.lab_color_preview = QFrame()
         self.lab_color_preview.setFixedSize(30, 30)
@@ -1699,10 +1752,10 @@ class MainWindow(QMainWindow):
         layout.addLayout(lab_row)
         option_row = QHBoxLayout()
         option_row.addWidget(QLabel("Count"))
-        self.lab_count_combo = QComboBox()
-        self.lab_count_combo.addItems([str(value) for value in range(2, 10)])
-        self.lab_count_combo.setCurrentText("5")
-        option_row.addWidget(self.lab_count_combo)
+        self.lab_count_input = QLineEdit("5")
+        self.lab_count_input.setFixedWidth(48)
+        self.lab_count_input.setValidator(QIntValidator(2, 20, self))
+        option_row.addWidget(self.lab_count_input)
         option_row.addWidget(QLabel("Tint bias"))
         self.tint_bias_combo = QComboBox()
         self.tint_bias_combo.addItems(["Neutral", "Warm", "Cool"])
@@ -1742,7 +1795,8 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(6)
         title = QLabel("Chart Preview")
-        title.setStyleSheet("font-size: 18px; font-weight: 700; background: transparent;")
+        title.setStyleSheet("font-weight: 700; background: transparent;")
+        set_widget_font(title, pixel_size=18, bold=True)
         layout.addWidget(title)
         mode_row = QHBoxLayout()
         mode_row.setSpacing(6)
@@ -1852,7 +1906,7 @@ class MainWindow(QMainWindow):
     def show_first_run_guide(self) -> None:
         message = (
             "\u91cd\u8981\u63d0\u793a\n\n"
-            "\u672c\u8f6f\u4ef6\u7531 [Alsophila] \u4e2a\u4eba\u5f00\u53d1\uff0c\u5b8c\u5168\u514d\u8d39\u5e76\u5728 GitHub \u975e\u5546\u7528\u5f00\u6e90\u3002"
+            f"\u672c\u8f6f\u4ef6\u7531 [{APP_AUTHOR}] \u4e2a\u4eba\u5f00\u53d1\uff0c{APP_TAGLINE}\uff0c\u5e76\u5728 GitHub \u975e\u5546\u7528\u5f00\u6e90\u3002"
             "\u5982\u679c\u60a8\u662f\u4ed8\u8d39\u8d2d\u4e70\u7684\u672c\u8f6f\u4ef6\uff0c\u8bf4\u660e\u60a8\u5df2\u88ab\u9a97\uff0c"
             "\u8bf7\u7acb\u5373\u9000\u6b3e\u5e76\u4e3e\u62a5\u5356\u5bb6\uff01\n\n"
             "\u57fa\u7840\u64cd\u4f5c\n\n"
@@ -1863,7 +1917,7 @@ class MainWindow(QMainWindow):
             "5. \u4e0b\u65b9 Preview \u53ef\u5207\u6362\u666e\u901a\u56fe\u3001\u70ed\u56fe\u3001\u7cfb\u7edf\u8fdb\u5316\u548c\u5730\u56fe\u793a\u610f\u3002\n\n"
             "PDF \u5efa\u8bae\u901a\u8fc7\u8be6\u60c5\u533a\u7684 Open PDF Extractor \u8fdb\u5165\u4e13\u95e8\u63d0\u53d6\u7a97\u53e3\u3002"
         )
-        QMessageBox.information(self, "Welcome", message)
+        QMessageBox.information(self, f"Welcome | Ver {APP_VERSION}", message)
         self.config.welcome_seen = True
         self.config.save()
 
@@ -2668,7 +2722,8 @@ class MainWindow(QMainWindow):
         return normalize_hex_code(self.lab_hex_input.text())
 
     def generated_color_count(self) -> int:
-        return int(self.lab_count_combo.currentText())
+        text = self.lab_count_input.text().strip() if hasattr(self, "lab_count_input") else "5"
+        return self.read_int(text, 5, 2, 20)
 
     def sync_lab_color_preview(self) -> None:
         try:

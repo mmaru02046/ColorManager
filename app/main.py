@@ -6,6 +6,7 @@ from pathlib import Path
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
+from app.branding import APP_NAME
 from app.ui.main_window import MainWindow
 
 
@@ -25,7 +26,7 @@ def main() -> int:
     owns_app = app is None
     if app is None:
         app = QApplication(sys.argv)
-        app.setApplicationName("ColorManager")
+        app.setApplicationName(APP_NAME)
         app.setQuitOnLastWindowClosed(True)
 
     icon_path = app_resource_path("icon.ico")

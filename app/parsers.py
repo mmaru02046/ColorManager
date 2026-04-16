@@ -10,6 +10,7 @@ from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QImage
 
 from app.models import ColorEntry, Palette
+from app.storage import suppress_native_stderr
 
 
 PALETTE_EXTENSIONS = {".ase", ".csv", ".json", ".gpl", ".pal"}
@@ -481,7 +482,8 @@ def detect_grid_bounds(image: QImage, prefer_bottom: bool = False) -> tuple[int,
 
 
 def load_qimage(path: Path, max_size: int = 160) -> QImage:
-    image = QImage(str(path))
+    with suppress_native_stderr():
+        image = QImage(str(path))
     if image.isNull():
         raise ValueError(f"Unable to load image: {path}")
     image = image.convertToFormat(QImage.Format.Format_ARGB32)

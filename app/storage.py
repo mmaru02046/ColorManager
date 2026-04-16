@@ -2,9 +2,12 @@
 
 import csv
 import json
+import os
 import struct
+from contextlib import contextmanager
 from pathlib import Path
 
+from app.branding import APP_AUTHOR
 from app.models import Palette
 
 
@@ -12,13 +15,42 @@ def ensure_directory(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
+EXPORT_NAME_SUFFIX = f"_free_by_{APP_AUTHOR[:1].lower()}"
+
+
+def build_export_color_name(name: str, index: int) -> str:
+    base_name = (name or f"Color {index}").strip() or f"Color {index}"
+    if base_name.endswith(EXPORT_NAME_SUFFIX):
+        return base_name
+    return f"{base_name}{EXPORT_NAME_SUFFIX}"
+
+
+@contextmanager
+def suppress_native_stderr() -> None:
+    try:
+        stderr_fd = os.dup(2)
+    except OSError:
+        yield
+        return
+
+    try:
+        with open(os.devnull, "w", encoding="utf-8", errors="ignore") as devnull:
+            os.dup2(devnull.fileno(), 2)
+            yield
+    finally:
+        try:
+            os.dup2(stderr_fd, 2)
+        finally:
+            os.close(stderr_fd)
+
+
 def save_palette_json(palette: Palette, output_path: Path) -> None:
     ensure_directory(output_path.parent)
     payload = {
         "name": palette.name,
         "colors": [
-            {"name": color.name, "hex": color.hex_code}
-            for color in palette.colors
+            {"name": build_export_color_name(color.name, index), "hex": color.hex_code}
+            for index, color in enumerate(palette.colors, start=1)
         ],
     }
     output_path.write_text(json.dumps(payload, indent=2, ensure_ascii=True), encoding="utf-8")
@@ -29,15 +61,15 @@ def save_palette_csv(palette: Palette, output_path: Path) -> None:
     with output_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(["name", "hex"])
-        for color in palette.colors:
-            writer.writerow([color.name, color.hex_code])
+        for index, color in enumerate(palette.colors, start=1):
+            writer.writerow([build_export_color_name(color.name, index), color.hex_code])
 
 
 def save_palette_ase(palette: Palette, output_path: Path) -> None:
     ensure_directory(output_path.parent)
     blocks: list[bytes] = []
     for index, color in enumerate(palette.colors, start=1):
-        name = color.name or f"Color {index}"
+        name = build_export_color_name(color.name, index)
         encoded_name = (name + "\x00").encode("utf-16-be")
         name_block = struct.pack(">H", len(name) + 1) + encoded_name
         r, g, b = color.rgb

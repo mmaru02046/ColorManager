@@ -25,6 +25,7 @@ Thumbs.db
 
 # Local app data
 app/user_config.json
+user_config.json
 
 # Logs
 *.log
