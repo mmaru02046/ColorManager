@@ -26,6 +26,8 @@ Thumbs.db
 # Local app data
 app/user_config.json
 user_config.json
+.webdav_cache/
+ColorManager.zip
 
 # Logs
 *.log

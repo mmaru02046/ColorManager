@@ -5,7 +5,7 @@ import math
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal, QUrl, QMimeData, QTimer
 from PySide6.QtGui import QColor, QFont, QGuiApplication, QIntValidator, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QFormLayout,
     QTreeWidget,
     QTreeWidgetItem,
     QMainWindow,
@@ -49,6 +50,7 @@ from app.config import AppConfig
 from app.models import ColorEntry, Palette
 from app.parsers import load_image_grid_palette, load_palette, load_pdf_palette, pdf_page_count, render_pdf_page, scan_palettes
 from app.storage import ensure_directory, save_originlab_pal, save_palette_ase, save_palette_csv, save_palette_json
+from app.webdav import WebDavClient, WebDavError
 from app.ui.pdf_dialog import PdfExtractDialog
 
 
@@ -58,6 +60,170 @@ def set_widget_font(widget: QWidget, pixel_size: int | None = None, bold: bool =
         font.setPixelSize(pixel_size)
     font.setBold(bold)
     widget.setFont(font)
+
+
+def ui_text(language: str, key: str, **kwargs: object) -> str:
+    translations = {
+        "zh": {
+            "export_palette_title": "导出色卡",
+            "palette_name": "色卡名称",
+            "selected_colors": "已选颜色：{count}",
+            "target_originlab": "OriginLab",
+            "target_general": "通用",
+            "target_python": "Python",
+            "target_matlab": "MATLAB",
+            "target_all_formats": "全部格式",
+            "order_current": "当前顺序",
+            "order_reverse": "反向顺序",
+            "order_light_to_dark": "由浅到深",
+            "order_dark_to_light": "由深到浅",
+            "clipboard": "剪贴板",
+            "files": "文件",
+            "both": "两者都要",
+            "advanced_preview_title": "高级预览",
+            "mode": "模式",
+            "normal": "正常",
+            "colorblind": "色盲模拟",
+            "grayscale": "灰度",
+            "chart": "图表",
+            "line": "折线",
+            "bar": "柱状",
+            "scatter": "散点",
+            "clustered": "聚类热图",
+            "circular": "环形",
+            "map": "地图",
+            "series": "序列",
+            "group_count": "组数",
+            "colors": "颜色数",
+            "advanced_preview_hint": "高级预览直接使用拼配区当前颜色顺序；可调整序列数、组数和颜色数来模拟不同图表密度。",
+            "close": "关闭",
+            "clustered_heatmap_preview": "聚类热图预览",
+            "phylo_preview_unavailable": "系统发育预览不可用",
+            "tree": "树",
+            "circular_tracks": "环形轨道",
+            "track": "轨道 {index}",
+            "circular_phylo_preview": "环形系统发育热图预览",
+            "map_preview_unavailable": "地图预览不可用",
+            "map_preview": "中国地图预览",
+            "menu_toggle_favorite": "切换收藏",
+            "menu_remove_favorite": "取消收藏",
+            "menu_add_tag": "添加标签",
+            "menu_remove_tag": "移除标签",
+            "menu_copy_file": "复制文件",
+            "menu_add_colors": "加入颜色",
+            "menu_rename": "重命名",
+            "menu_extract_theme": "重新提取主题",
+            "menu_open_pdf_extractor": "打开 PDF 提取器",
+            "menu_delete_recycle": "移到回收站",
+            "add_tag_title": "添加标签",
+            "add_tag_prompt": "标签名：",
+            "existing_tags": "已有：{tags}",
+            "remove_tag_title": "移除标签",
+            "tag_label": "标签：",
+            "no_tags_title": "没有标签",
+            "no_tags_message": "当前还没有标签。",
+            "cart_empty_title": "拼配区为空",
+            "cart_empty_message": "请先往拼配区加入颜色。高级预览会直接使用拼配区当前顺序。",
+            "webdav_setting_title": "WebDAV 设置",
+            "webdav_url": "链接",
+            "webdav_username": "用户名",
+            "webdav_password": "密码",
+            "webdav_remote_root": "根目录",
+            "save": "保存",
+            "cancel": "取消",
+            "test_connection": "测试连接",
+            "webdav_test_ok": "读取成功：根目录可访问。",
+            "webdav_test_read_ok": "读取成功，但写入测试未执行。",
+            "webdav_test_root_missing": "无法读取根目录，请检查根目录是否已存在。",
+            "webdav_test_materials_exists": "`materials` 已存在",
+            "webdav_test_library_exists": "`library` 已存在",
+            "webdav_test_materials_create_ok": "`materials` 可创建",
+            "webdav_test_library_create_ok": "`library` 可创建",
+            "webdav_test_materials_create_fail": "`materials` 创建失败：{message}",
+            "webdav_test_library_create_fail": "`library` 创建失败：{message}",
+        },
+        "en": {
+            "export_palette_title": "Export Palette",
+            "palette_name": "Palette name",
+            "selected_colors": "Selected colors: {count}",
+            "target_originlab": "OriginLab",
+            "target_general": "General",
+            "target_python": "Python",
+            "target_matlab": "MATLAB",
+            "target_all_formats": "All Formats",
+            "order_current": "Current order",
+            "order_reverse": "Reverse order",
+            "order_light_to_dark": "Light to dark",
+            "order_dark_to_light": "Dark to light",
+            "clipboard": "Clipboard",
+            "files": "Files",
+            "both": "Both",
+            "advanced_preview_title": "Advanced Preview",
+            "mode": "Mode",
+            "normal": "Normal",
+            "colorblind": "Colorblind",
+            "grayscale": "Grayscale",
+            "chart": "Chart",
+            "line": "Line",
+            "bar": "Bar",
+            "scatter": "Scatter",
+            "clustered": "Clustered",
+            "circular": "Circular",
+            "map": "Map",
+            "series": "Series",
+            "group_count": "Group",
+            "colors": "Colors",
+            "advanced_preview_hint": "Advanced Preview uses the current cart order directly; adjust series, group, and color count to simulate denser charts.",
+            "close": "Close",
+            "clustered_heatmap_preview": "Clustered heatmap preview",
+            "phylo_preview_unavailable": "Phylogenetic preview unavailable",
+            "tree": "Tree",
+            "circular_tracks": "Circular tracks",
+            "track": "Track {index}",
+            "circular_phylo_preview": "Circular phylogenetic heatmap preview",
+            "map_preview_unavailable": "China map preview unavailable",
+            "map_preview": "China map preview",
+            "menu_toggle_favorite": "Toggle Favorite",
+            "menu_remove_favorite": "Remove Favorite",
+            "menu_add_tag": "Add Tag",
+            "menu_remove_tag": "Remove Tag",
+            "menu_copy_file": "Copy File",
+            "menu_add_colors": "Add Colors",
+            "menu_rename": "Rename",
+            "menu_extract_theme": "Extract Theme",
+            "menu_open_pdf_extractor": "Open PDF Extractor",
+            "menu_delete_recycle": "Delete To Recycle Bin",
+            "add_tag_title": "Add Tag",
+            "add_tag_prompt": "Tag name:",
+            "existing_tags": "Existing: {tags}",
+            "remove_tag_title": "Remove Tag",
+            "tag_label": "Tag:",
+            "no_tags_title": "No Tags",
+            "no_tags_message": "No tags exist yet.",
+            "cart_empty_title": "Cart Empty",
+            "cart_empty_message": "Add colors to the Cart first. Advanced Preview uses the Cart order directly.",
+            "webdav_setting_title": "WebDAV Setting",
+            "webdav_url": "URL",
+            "webdav_username": "Username",
+            "webdav_password": "Password",
+            "webdav_remote_root": "Root Directory",
+            "save": "Save",
+            "cancel": "Cancel",
+            "test_connection": "Test Connection",
+            "webdav_test_ok": "Read succeeded: root is accessible.",
+            "webdav_test_read_ok": "Read succeeded, but write test was not performed.",
+            "webdav_test_root_missing": "Root cannot be read. Please check that it already exists.",
+            "webdav_test_materials_exists": "`materials` already exists",
+            "webdav_test_library_exists": "`library` already exists",
+            "webdav_test_materials_create_ok": "`materials` can be created",
+            "webdav_test_library_create_ok": "`library` can be created",
+            "webdav_test_materials_create_fail": "`materials` create failed: {message}",
+            "webdav_test_library_create_fail": "`library` create failed: {message}",
+        },
+    }
+    language_map = translations.get(language, translations["zh"])
+    template = language_map.get(key, key)
+    return template.format(**kwargs)
 
 
 class ClickableColorCard(QFrame):
@@ -918,13 +1084,14 @@ class ChartPreviewWidget(QWidget):
                 painter.drawRect(rect)
 
         painter.setPen(QPen(QColor("#475569"), 1))
-        painter.drawText(int(matrix.left()), int(plot.bottom() + 18), "Clustered heatmap preview")
+        language = getattr(self.window(), "ui_language", "zh")
+        painter.drawText(int(matrix.left()), int(plot.bottom() + 18), ui_text(language, "clustered_heatmap_preview"))
 
     def paint_phylo(self, painter: QPainter, plot: QRectF, colors: list[str], has_focus: bool) -> None:
         root, leaves, max_distance = get_preview_phylo_layout()
         if not leaves:
             painter.setPen(QPen(QColor("#475569"), 1))
-            painter.drawText(plot, Qt.AlignCenter, "Phylogenetic preview unavailable")
+            painter.drawText(plot, Qt.AlignCenter, ui_text(getattr(self.window(), "ui_language", "zh"), "phylo_preview_unavailable"))
             return
 
         leaf_count = len(leaves)
@@ -1015,7 +1182,7 @@ class ChartPreviewWidget(QWidget):
         painter.drawText(
             QRectF(center.x() - title_radius, center.y() - title_radius * 0.55, title_radius * 2, title_radius * 1.1),
             Qt.AlignCenter,
-            'Tree',
+            ui_text(getattr(self.window(), "ui_language", "zh"), "tree"),
         )
 
         for ring_index in range(ring_count):
@@ -1066,7 +1233,8 @@ class ChartPreviewWidget(QWidget):
         legend_x = circle_rect.right() + 18
         legend_y = plot.top() + 18
         painter.setPen(QPen(QColor('#475569'), 1))
-        painter.drawText(QRectF(legend_x, legend_y - 12, legend_width - 12, 14), Qt.AlignLeft | Qt.AlignVCenter, 'Circular tracks')
+        language = getattr(self.window(), "ui_language", "zh")
+        painter.drawText(QRectF(legend_x, legend_y - 12, legend_width - 12, 14), Qt.AlignLeft | Qt.AlignVCenter, ui_text(language, "circular_tracks"))
         for idx in range(len(palette_colors)):
             column = idx // 8
             row = idx % 8
@@ -1077,17 +1245,17 @@ class ChartPreviewWidget(QWidget):
             painter.setPen(QPen(QColor('#CBD5E1'), 0.8))
             painter.drawRect(QRectF(item_x, item_y, 12, 12))
             painter.setPen(QPen(QColor('#475569'), 1))
-            painter.drawText(QRectF(item_x + 18, item_y - 1, 96, 14), Qt.AlignLeft | Qt.AlignVCenter, f'Track {idx + 1}')
+            painter.drawText(QRectF(item_x + 18, item_y - 1, 96, 14), Qt.AlignLeft | Qt.AlignVCenter, ui_text(language, "track", index=idx + 1))
 
         painter.setPen(QPen(QColor('#475569'), 1))
-        painter.drawText(int(plot.left()), int(plot.bottom() + 18), 'Circular phylogenetic heatmap preview')
+        painter.drawText(int(plot.left()), int(plot.bottom() + 18), ui_text(language, "circular_phylo_preview"))
 
 
     def paint_map(self, painter: QPainter, plot: QRectF, colors: list[str], has_focus: bool) -> None:
         shapes = load_china_preview_shapes()
         if not shapes:
             painter.setPen(QPen(QColor("#475569"), 1))
-            painter.drawText(plot, Qt.AlignCenter, "China map preview unavailable")
+            painter.drawText(plot, Qt.AlignCenter, ui_text(getattr(self.window(), "ui_language", "zh"), "map_preview_unavailable"))
             return
 
         def project_point(lon: float, lat: float) -> tuple[float, float]:
@@ -1160,7 +1328,7 @@ class ChartPreviewWidget(QWidget):
             painter.drawPath(path)
 
         painter.setPen(QPen(QColor("#475569"), 1))
-        painter.drawText(int(plot.left()), int(plot.bottom() + 18), "China map preview")
+        painter.drawText(int(plot.left()), int(plot.bottom() + 18), ui_text(getattr(self.window(), "ui_language", "zh"), "map_preview"))
 
 
     def draw_marker(self, painter: QPainter, point: QPointF, color: QColor, highlighted: bool = False) -> None:
@@ -1184,24 +1352,41 @@ class ChartPreviewWidget(QWidget):
 class PaletteCreateDialog(QDialog):
     def __init__(self, colors: list[ColorEntry], parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Export Palette")
+        self.ui_language = getattr(parent, "ui_language", "zh")
+        self.setWindowTitle(ui_text(self.ui_language, "export_palette_title"))
         self._output_key = "clipboard"
         layout = QVBoxLayout(self)
         self.name_input = QLineEdit()
-        self.name_input.setPlaceholderText("Palette name")
-        layout.addWidget(QLabel(f"Selected colors: {len(colors)}"))
+        self.name_input.setPlaceholderText(ui_text(self.ui_language, "palette_name"))
+        layout.addWidget(QLabel(ui_text(self.ui_language, "selected_colors", count=len(colors))))
         layout.addWidget(self.name_input)
         self.target_combo = QComboBox()
-        self.target_combo.addItems(["OriginLab", "General", "R", "Python", "MATLAB", "All Formats"])
+        self.target_combo.addItems(
+            [
+                ui_text(self.ui_language, "target_originlab"),
+                ui_text(self.ui_language, "target_general"),
+                "R",
+                ui_text(self.ui_language, "target_python"),
+                ui_text(self.ui_language, "target_matlab"),
+                ui_text(self.ui_language, "target_all_formats"),
+            ]
+        )
         self.target_combo.setCurrentIndex(0)
         layout.addWidget(self.target_combo)
         self.order_combo = QComboBox()
-        self.order_combo.addItems(["Current order", "Reverse order", "Light to dark", "Dark to light"])
+        self.order_combo.addItems(
+            [
+                ui_text(self.ui_language, "order_current"),
+                ui_text(self.ui_language, "order_reverse"),
+                ui_text(self.ui_language, "order_light_to_dark"),
+                ui_text(self.ui_language, "order_dark_to_light"),
+            ]
+        )
         layout.addWidget(self.order_combo)
         button_row = QHBoxLayout()
-        clipboard_button = QPushButton("Clipboard")
-        files_button = QPushButton("Files")
-        both_button = QPushButton("Both")
+        clipboard_button = QPushButton(ui_text(self.ui_language, "clipboard"))
+        files_button = QPushButton(ui_text(self.ui_language, "files"))
+        both_button = QPushButton(ui_text(self.ui_language, "both"))
         clipboard_button.clicked.connect(lambda: self.submit("clipboard"))
         files_button.clicked.connect(lambda: self.submit("files"))
         both_button.clicked.connect(lambda: self.submit("both"))
@@ -1217,22 +1402,22 @@ class PaletteCreateDialog(QDialog):
     @property
     def target_key(self) -> str:
         mapping = {
-            "General": "general",
-            "OriginLab": "originlab",
+            ui_text(self.ui_language, "target_general"): "general",
+            ui_text(self.ui_language, "target_originlab"): "originlab",
             "R": "r",
-            "Python": "python",
-            "MATLAB": "matlab",
-            "All Formats": "all_formats",
+            ui_text(self.ui_language, "target_python"): "python",
+            ui_text(self.ui_language, "target_matlab"): "matlab",
+            ui_text(self.ui_language, "target_all_formats"): "all_formats",
         }
         return mapping[self.target_combo.currentText()]
 
     @property
     def order_key(self) -> str:
         mapping = {
-            "Current order": "current",
-            "Reverse order": "reverse",
-            "Light to dark": "light_to_dark",
-            "Dark to light": "dark_to_light",
+            ui_text(self.ui_language, "order_current"): "current",
+            ui_text(self.ui_language, "order_reverse"): "reverse",
+            ui_text(self.ui_language, "order_light_to_dark"): "light_to_dark",
+            ui_text(self.ui_language, "order_dark_to_light"): "dark_to_light",
         }
         return mapping[self.order_combo.currentText()]
 
@@ -1247,7 +1432,8 @@ class PaletteCreateDialog(QDialog):
 class AdvancedPreviewDialog(QDialog):
     def __init__(self, preview_state: dict[str, object], parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Advanced Preview")
+        self.ui_language = getattr(parent, "ui_language", "zh")
+        self.setWindowTitle(ui_text(self.ui_language, "advanced_preview_title"))
         self.resize(760, 980)
         self.setMinimumSize(720, 900)
         self.preview_state = preview_state.copy()
@@ -1257,14 +1443,14 @@ class AdvancedPreviewDialog(QDialog):
         layout.setSpacing(8)
 
         mode_row = QHBoxLayout()
-        mode_row.addWidget(QLabel("Mode"))
-        self.normal_button = QPushButton("Normal")
+        mode_row.addWidget(QLabel(ui_text(self.ui_language, "mode")))
+        self.normal_button = QPushButton(ui_text(self.ui_language, "normal"))
         self.normal_button.setCheckable(True)
-        self.colorblind_button = QPushButton("Colorblind")
+        self.colorblind_button = QPushButton(ui_text(self.ui_language, "colorblind"))
         self.colorblind_button.setCheckable(True)
         self.colorblind_type_combo = QComboBox()
         self.colorblind_type_combo.addItems(["Protan", "Deutan", "Tritan"])
-        self.grayscale_button = QPushButton("Grayscale")
+        self.grayscale_button = QPushButton(ui_text(self.ui_language, "grayscale"))
         self.grayscale_button.setCheckable(True)
         self.normal_button.clicked.connect(lambda: self.set_preview_mode("normal"))
         self.colorblind_button.clicked.connect(self.activate_colorblind_preview)
@@ -1278,9 +1464,16 @@ class AdvancedPreviewDialog(QDialog):
         layout.addLayout(mode_row)
 
         chart_row = QHBoxLayout()
-        chart_row.addWidget(QLabel("Chart"))
+        chart_row.addWidget(QLabel(ui_text(self.ui_language, "chart")))
         self.chart_buttons: dict[str, QPushButton] = {}
-        for label, value in (("Line", "line"), ("Bar", "bar"), ("Scatter", "scatter"), ("Clustered", "heatmap"), ("Circular", "phylo"), ("Map", "map")):
+        for label, value in (
+            (ui_text(self.ui_language, "line"), "line"),
+            (ui_text(self.ui_language, "bar"), "bar"),
+            (ui_text(self.ui_language, "scatter"), "scatter"),
+            (ui_text(self.ui_language, "clustered"), "heatmap"),
+            (ui_text(self.ui_language, "circular"), "phylo"),
+            (ui_text(self.ui_language, "map"), "map"),
+        ):
             button = QPushButton(label)
             button.setCheckable(True)
             button.clicked.connect(lambda _checked, chart=value: self.set_chart_type(chart))
@@ -1291,17 +1484,17 @@ class AdvancedPreviewDialog(QDialog):
 
         metric_row = QHBoxLayout()
         metric_row.setSpacing(6)
-        metric_row.addWidget(QLabel("Series"))
+        metric_row.addWidget(QLabel(ui_text(self.ui_language, "series")))
         self.series_input = QLineEdit(str(int(self.preview_state.get("series_count", 5))))
         self.series_input.setFixedWidth(52)
         self.series_input.editingFinished.connect(self.refresh_preview)
         metric_row.addWidget(self.series_input)
-        metric_row.addWidget(QLabel("Group"))
+        metric_row.addWidget(QLabel(ui_text(self.ui_language, "group_count")))
         self.group_input = QLineEdit(str(int(self.preview_state.get("group_count", 4))))
         self.group_input.setFixedWidth(52)
         self.group_input.editingFinished.connect(self.refresh_preview)
         metric_row.addWidget(self.group_input)
-        metric_row.addWidget(QLabel("Colors"))
+        metric_row.addWidget(QLabel(ui_text(self.ui_language, "colors")))
         self.color_count_input = QLineEdit(str(max(1, len(list(self.preview_state.get("colors", []))))))
         self.color_count_input.setFixedWidth(52)
         self.color_count_input.editingFinished.connect(self.refresh_preview)
@@ -1309,7 +1502,7 @@ class AdvancedPreviewDialog(QDialog):
         metric_row.addStretch(1)
         layout.addLayout(metric_row)
 
-        hint = QLabel("???Advanced Preview ?????? Cart ??????Series / Group / Colors ?????????")
+        hint = QLabel(ui_text(self.ui_language, "advanced_preview_hint"))
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #475569; background: transparent;")
         layout.addWidget(hint)
@@ -1318,7 +1511,7 @@ class AdvancedPreviewDialog(QDialog):
         self.chart_preview.setMinimumHeight(520)
         layout.addWidget(self.chart_preview, 1)
 
-        close_button = QPushButton("Close")
+        close_button = QPushButton(ui_text(self.ui_language, "close"))
         close_button.clicked.connect(self.accept)
         layout.addWidget(close_button)
 
@@ -1391,11 +1584,73 @@ class AdvancedPreviewDialog(QDialog):
             value = fallback
         return max(minimum, min(maximum, value))
 
+
+class WebDavSettingsDialog(QDialog):
+    def __init__(
+        self,
+        config: AppConfig,
+        ui_language: str,
+        tester,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.ui_language = ui_language
+        self.tester = tester
+        self.setWindowTitle(ui_text(ui_language, "webdav_setting_title"))
+        self.resize(520, 280)
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+
+        self.url_input = QLineEdit(config.webdav_url)
+        self.username_input = QLineEdit(config.webdav_username)
+        self.password_input = QLineEdit(config.webdav_password)
+        self.password_input.setEchoMode(QLineEdit.Password)
+        self.root_input = QLineEdit(config.webdav_root_dir)
+
+        form.addRow(ui_text(ui_language, "webdav_url"), self.url_input)
+        form.addRow(ui_text(ui_language, "webdav_username"), self.username_input)
+        form.addRow(ui_text(ui_language, "webdav_password"), self.password_input)
+        form.addRow(ui_text(ui_language, "webdav_remote_root"), self.root_input)
+        layout.addLayout(form)
+
+        self.status_label = QLabel("")
+        self.status_label.setWordWrap(True)
+        self.status_label.setStyleSheet("color: #475569; background: transparent;")
+        layout.addWidget(self.status_label)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch(1)
+        test_button = QPushButton(ui_text(ui_language, "test_connection"))
+        save_button = QPushButton(ui_text(ui_language, "save"))
+        cancel_button = QPushButton(ui_text(ui_language, "cancel"))
+        test_button.clicked.connect(self.run_test)
+        save_button.clicked.connect(self.accept)
+        cancel_button.clicked.connect(self.reject)
+        button_row.addWidget(test_button)
+        button_row.addWidget(save_button)
+        button_row.addWidget(cancel_button)
+        layout.addLayout(button_row)
+
+    @property
+    def values(self) -> dict[str, str]:
+        return {
+            "url": self.url_input.text().strip(),
+            "username": self.username_input.text().strip(),
+            "password": self.password_input.text().strip(),
+            "root": self.root_input.text().strip(),
+        }
+
+    def run_test(self) -> None:
+        self.status_label.setText(self.tester(self.values))
+
 class MainWindow(QMainWindow):
     def __init__(self, base_dir: Path) -> None:
         super().__init__()
         self.base_dir = base_dir
         self.config = AppConfig(base_dir / "user_config.json")
+        self.ui_language = self.config.ui_language
+        self.webdav_client: WebDavClient | None = None
         self.palettes: list[Palette] = []
         self.filtered_palettes: list[Palette] = []
         self.current_palette: Palette | None = None
@@ -1403,7 +1658,7 @@ class MainWindow(QMainWindow):
         self.base_color_hex = "#4E74B3"
         self.active_source_filter = "all"
         self.sort_mode = "folder"
-        self.group_mode = "folder"
+        self.group_mode = "format"
         self.chart_type = "line"
         self.marker_shape = "circle"
         self.preview_mode = "normal"
@@ -1412,7 +1667,7 @@ class MainWindow(QMainWindow):
         self.status_rotation_index = 0
         self.status_rotation_timer = QTimer(self)
         self.status_rotation_label = QLabel()
-        self.setWindowTitle(f"{APP_DISPLAY_NAME} {APP_VERSION}")
+        self.setWindowTitle(self.t("window_title"))
         self.resize(1720, 980)
         self.setAcceptDrops(True)
         self.setStyleSheet(
@@ -1465,9 +1720,679 @@ class MainWindow(QMainWindow):
         )
         self.build_ui()
         self.setup_status_bar()
+        self.apply_language()
         self.sync_lab_color_preview()
         self.load_initial_state()
         self.update_chart_preview()
+
+    def t(self, key: str, **kwargs: object) -> str:
+        translations = {
+            "zh": {
+                "window_title": f"{APP_DISPLAY_NAME} {APP_VERSION}",
+                "language_button": "EN",
+                "top_materials": "素材库",
+                "top_library": "成品库",
+                "top_webdav_root": "WebDAV 设置",
+                "top_storage_mode_local": "本地模式",
+                "top_storage_mode_webdav": "WebDAV 模式",
+                "top_rescan": "重新扫描",
+                "top_import_files": "导入文件",
+                "top_import_folder": "导入文件夹",
+                "top_paste_image": "粘贴图片",
+                "webdav_root_not_set": "WebDAV：未配置",
+                "webdav_root_path": "WebDAV：{url} | 根目录：{path}",
+                "materials_not_set": "素材库：未设置",
+                "library_not_set": "成品库：未设置",
+                "materials_path": "素材库：{path}",
+                "library_path": "成品库：{path}",
+                "drop_hint": "拖入文件/文件夹到窗口，或使用上方“导入文件 / 粘贴图片”",
+                "drop_hint_release": "松开鼠标即可导入到素材库",
+                "palettes": "色卡",
+                "filter_all": "全部",
+                "filter_materials": "素材库",
+                "filter_library": "成品库",
+                "filter_favorites": "收藏",
+                "sort": "排序",
+                "group": "分组",
+                "sort_folder": "按文件夹",
+                "sort_format": "按格式",
+                "sort_name": "按名称",
+                "sort_color_count": "按颜色数",
+                "group_format": "格式",
+                "group_folder": "文件夹",
+                "group_source": "来源",
+                "group_tags": "标签",
+                "group_none": "不分组",
+                "search_placeholder": "搜索名称或路径",
+                "count": "数量",
+                "hue": "色相",
+                "type": "类型",
+                "tag": "标签",
+                "any": "不限",
+                "hue_red": "红",
+                "hue_orange": "橙",
+                "hue_yellow": "黄",
+                "hue_green": "绿",
+                "hue_cyan": "青",
+                "hue_blue": "蓝",
+                "hue_purple": "紫",
+                "hue_neutral": "中性",
+                "hue_mixed": "混合",
+                "type_code_palette": "代码色卡",
+                "type_image": "图片",
+                "type_gradient": "渐变",
+                "type_document": "文档",
+                "palette_details": "色卡详情",
+                "palette_placeholder": "选择一个色卡",
+                "palette_meta_hint": "点击左侧色卡后，中间展开颜色。左键复制，右键加入右侧拼配区。",
+                "open_pdf_extractor": "打开 PDF 提取器",
+                "cart": "拼配区",
+                "cart_info": "右侧颜色会加入这里。拖拽排序后保存时，将按当前顺序导出。",
+                "selected_count": "已选：{count}",
+                "no_colors_selected": "尚未选中颜色",
+                "remove": "移除",
+                "clear": "清空",
+                "save_palette": "保存色卡",
+                "export_gradient": "导出渐变",
+                "color_lab": "配色实验室",
+                "pick": "取色",
+                "tint_bias": "明暗倾向",
+                "tint_mode": "梯度方式",
+                "neutral": "中性",
+                "warm": "偏暖",
+                "cool": "偏冷",
+                "tint_mode_darkest": "原色最深",
+                "tint_mode_lightest": "原色最浅",
+                "tint_mode_center": "原色居中",
+                "blend_mid": "中间混色",
+                "similar": "近似色",
+                "complement": "互补色",
+                "diverging": "发散色",
+                "tint_ramp": "明度阶梯",
+                "lab_hint": "提示：右侧选中 2 个或以上颜色时，“中间混色”和“发散色”会插入这些颜色之间，而不是追加到末尾。",
+                "chart_preview": "图表预览",
+                "mode": "模式",
+                "normal": "正常",
+                "colorblind": "色盲模拟",
+                "grayscale": "灰度",
+                "chart": "图表",
+                "line": "折线",
+                "bar": "柱状",
+                "scatter": "散点",
+                "advanced_preview": "高级预览",
+                "point": "点形",
+                "circle": "圆",
+                "square": "方",
+                "triangle": "三角",
+                "series": "序列",
+                "group_count": "组数",
+                "alpha": "透明度",
+                "preview_hint": "提示：预览可在正常、色盲模拟、黑白之间切换。Alpha 只影响预览，不影响导出。",
+                "section_favorites": "收藏",
+                "section_materials": "素材库",
+                "section_library": "成品库",
+                "prefix_tag": "标签：{value}",
+                "prefix_format": "格式：{value}",
+                "prefix_source": "来源：{value}",
+                "prefix_folder": "文件夹：{value}",
+                "all_palettes": "全部色卡",
+                "generated": "生成内容",
+                "palette_meta_pdf": "{count} 个预览色 | PDF | {pages} 页 | 来源：{source}",
+                "palette_meta_regular": "{count} 个颜色 | {group} | 来源：{source}",
+                "palette_meta_selection": "{count} 个颜色 | 选区网格 | 来源：{source}",
+                "choose_webdav_root": "选择 WebDAV 根目录",
+                "webdav_ready": "WebDAV 已连接，远端 materials / library 已就绪",
+                "webdav_sync_failed": "WebDAV 同步失败：{message}",
+                "webdav_settings_missing": "请先完成 WebDAV 设置。",
+            },
+            "en": {
+                "window_title": f"{APP_DISPLAY_NAME} {APP_VERSION}",
+                "language_button": "中文",
+                "top_materials": "Materials",
+                "top_library": "Library",
+                "top_webdav_root": "WebDAV Setting",
+                "top_storage_mode_local": "Local Mode",
+                "top_storage_mode_webdav": "WebDAV Mode",
+                "top_rescan": "Rescan",
+                "top_import_files": "Import Files",
+                "top_import_folder": "Import Folder",
+                "top_paste_image": "Paste Image",
+                "webdav_root_not_set": "WebDAV: not configured",
+                "webdav_root_path": "WebDAV: {url} | Root: {path}",
+                "materials_not_set": "Materials: not set",
+                "library_not_set": "Library: not set",
+                "materials_path": "Materials: {path}",
+                "library_path": "Library: {path}",
+                "drop_hint": "Drop files/folders here, or use Import Files / Paste Image above",
+                "drop_hint_release": "Release to import into Materials",
+                "palettes": "Palettes",
+                "filter_all": "All",
+                "filter_materials": "Materials",
+                "filter_library": "Library",
+                "filter_favorites": "Favorites",
+                "sort": "Sort",
+                "group": "Group",
+                "sort_folder": "Folder",
+                "sort_format": "Format",
+                "sort_name": "Name",
+                "sort_color_count": "Color Count",
+                "group_format": "Format",
+                "group_folder": "Folder",
+                "group_source": "Source",
+                "group_tags": "Tags",
+                "group_none": "None",
+                "search_placeholder": "Search name or path",
+                "count": "Count",
+                "hue": "Hue",
+                "type": "Type",
+                "tag": "Tag",
+                "any": "Any",
+                "hue_red": "Red",
+                "hue_orange": "Orange",
+                "hue_yellow": "Yellow",
+                "hue_green": "Green",
+                "hue_cyan": "Cyan",
+                "hue_blue": "Blue",
+                "hue_purple": "Purple",
+                "hue_neutral": "Neutral",
+                "hue_mixed": "Mixed",
+                "type_code_palette": "Code Palette",
+                "type_image": "Image",
+                "type_gradient": "Gradient",
+                "type_document": "Document",
+                "palette_details": "Palette Details",
+                "palette_placeholder": "Select a palette",
+                "palette_meta_hint": "Click a palette on the left to expand its colors here. Left click copies, right click adds to the cart.",
+                "open_pdf_extractor": "Open PDF Extractor",
+                "cart": "Cart",
+                "cart_info": "Colors added from the center appear here. Drag to reorder, and export follows this order.",
+                "selected_count": "Selected: {count}",
+                "no_colors_selected": "No colors selected",
+                "remove": "Remove",
+                "clear": "Clear",
+                "save_palette": "Save Palette",
+                "export_gradient": "Export Gradient",
+                "color_lab": "Color Lab",
+                "pick": "Pick",
+                "count": "Count",
+                "tint_bias": "Tint bias",
+                "tint_mode": "Tint mode",
+                "neutral": "Neutral",
+                "warm": "Warm",
+                "cool": "Cool",
+                "tint_mode_darkest": "Base darkest",
+                "tint_mode_lightest": "Base lightest",
+                "tint_mode_center": "Base center",
+                "blend_mid": "Blend Mid",
+                "similar": "Similar",
+                "complement": "Complement",
+                "diverging": "Diverging",
+                "tint_ramp": "Tint Ramp",
+                "lab_hint": "Tip: when 2 or more colors are selected on the right, Blend Mid and Diverging are inserted between them instead of appended.",
+                "chart_preview": "Chart Preview",
+                "mode": "Mode",
+                "normal": "Normal",
+                "colorblind": "Colorblind",
+                "grayscale": "Grayscale",
+                "chart": "Chart",
+                "line": "Line",
+                "bar": "Bar",
+                "scatter": "Scatter",
+                "advanced_preview": "Advanced Preview",
+                "point": "Point",
+                "circle": "Circle",
+                "square": "Square",
+                "triangle": "Triangle",
+                "series": "Series",
+                "group_count": "Group",
+                "alpha": "Alpha",
+                "preview_hint": "Tip: preview can switch between normal, colorblind simulation, and grayscale. Alpha only affects preview, not export.",
+                "section_favorites": "Favorites",
+                "section_materials": "Materials",
+                "section_library": "Library",
+                "prefix_tag": "Tag: {value}",
+                "prefix_format": "Format: {value}",
+                "prefix_source": "Source: {value}",
+                "prefix_folder": "Folder: {value}",
+                "all_palettes": "All palettes",
+                "generated": "Generated",
+                "palette_meta_pdf": "{count} preview colors | PDF | {pages} pages | Source: {source}",
+                "palette_meta_regular": "{count} colors | {group} | Source: {source}",
+                "palette_meta_selection": "{count} colors | selection grid | Source: {source}",
+                "choose_webdav_root": "Choose WebDAV Root",
+                "webdav_ready": "WebDAV is connected and remote materials / library are ready",
+                "webdav_sync_failed": "WebDAV sync failed: {message}",
+                "webdav_settings_missing": "Please complete the WebDAV settings first.",
+            },
+        }
+        language = translations.get(self.ui_language, translations["zh"])
+        template = language.get(key, key)
+        return template.format(**kwargs)
+
+    def _set_combo_items(
+        self,
+        combo: QComboBox,
+        items: list[tuple[str, str]],
+        current_data: str | None = None,
+    ) -> None:
+        combo.blockSignals(True)
+        combo.clear()
+        for label, data in items:
+            combo.addItem(label, data)
+        if current_data is not None:
+            index = combo.findData(current_data)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+        combo.blockSignals(False)
+
+    def update_materials_label(self) -> None:
+        if self.is_webdav_mode() and self.config.webdav_root_dir:
+            self.materials_label.setText(self.t("materials_path", path=f"{self.config.webdav_root_dir.strip().strip('/')}/materials"))
+        elif self.config.materials_dir:
+            self.materials_label.setText(self.t("materials_path", path=self.config.materials_dir))
+        else:
+            self.materials_label.setText(self.t("materials_not_set"))
+
+    def update_library_label(self) -> None:
+        if self.is_webdav_mode() and self.config.webdav_root_dir:
+            self.library_label.setText(self.t("library_path", path=f"{self.config.webdav_root_dir.strip().strip('/')}/library"))
+        elif self.config.library_dir:
+            self.library_label.setText(self.t("library_path", path=self.config.library_dir))
+        else:
+            self.library_label.setText(self.t("library_not_set"))
+
+    def update_webdav_root_label(self) -> None:
+        if self.config.webdav_url and self.config.webdav_root_dir:
+            self.webdav_root_label.setText(
+                self.t("webdav_root_path", url=self.config.webdav_url, path=self.config.webdav_root_dir)
+            )
+        else:
+            self.webdav_root_label.setText(self.t("webdav_root_not_set"))
+
+    def webdav_cache_root(self) -> Path:
+        return self.base_dir / ".webdav_cache"
+
+    def webdav_cache_materials_dir(self) -> Path:
+        return self.webdav_cache_root() / "materials"
+
+    def webdav_cache_library_dir(self) -> Path:
+        return self.webdav_cache_root() / "library"
+
+    def is_webdav_mode(self) -> bool:
+        return self.config.storage_mode == "webdav"
+
+    def has_webdav_settings(self) -> bool:
+        return bool(self.config.webdav_url.strip() and self.config.webdav_root_dir.strip())
+
+    def ensure_webdav_client(self) -> WebDavClient:
+        if not self.has_webdav_settings():
+            raise WebDavError(self.t("webdav_settings_missing"))
+        self.webdav_client = WebDavClient(
+            self.config.webdav_url,
+            self.config.webdav_username,
+            self.config.webdav_password,
+        )
+        return self.webdav_client
+
+    def build_webdav_client_from_values(self, values: dict[str, str]) -> WebDavClient:
+        return WebDavClient(values["url"], values["username"], values["password"])
+
+    def webdav_remote_group_root(self, group: str) -> str:
+        base = self.config.webdav_root_dir.strip().strip("/")
+        return f"/{base}/{group}" if base else f"/{group}"
+
+    def sync_webdav_from_remote(self) -> None:
+        client = self.ensure_webdav_client()
+        root_remote = self.config.webdav_root_dir.strip()
+        materials_remote = self.webdav_remote_group_root("materials")
+        library_remote = self.webdav_remote_group_root("library")
+        existing_dirs = client.list_child_directory_names(root_remote)
+        if "materials" not in existing_dirs:
+            client.ensure_child_directory(root_remote, "materials")
+        if "library" not in existing_dirs:
+            client.ensure_child_directory(root_remote, "library")
+        client.sync_directory(materials_remote, self.webdav_cache_materials_dir())
+        client.sync_directory(library_remote, self.webdav_cache_library_dir())
+
+    def test_webdav_connection(self, values: dict[str, str]) -> str:
+        root_remote = values["root"].strip()
+        if not values["url"].strip() or not root_remote:
+            return self.t("webdav_settings_missing")
+        try:
+            client = self.build_webdav_client_from_values(values)
+            existing_dirs = client.list_child_directory_names(root_remote)
+        except WebDavError as exc:
+            return self.t("webdav_test_root_missing") + f" {exc}"
+        messages = [self.t("webdav_test_ok")]
+        if "materials" in existing_dirs:
+            messages.append(self.t("webdav_test_materials_exists"))
+        else:
+            try:
+                client.ensure_child_directory(root_remote, "materials")
+                messages.append(self.t("webdav_test_materials_create_ok"))
+            except WebDavError as exc:
+                messages.append(self.t("webdav_test_materials_create_fail", message=str(exc)))
+        if "library" in existing_dirs:
+            messages.append(self.t("webdav_test_library_exists"))
+        else:
+            try:
+                client.ensure_child_directory(root_remote, "library")
+                messages.append(self.t("webdav_test_library_create_ok"))
+            except WebDavError as exc:
+                messages.append(self.t("webdav_test_library_create_fail", message=str(exc)))
+        return "\n".join(messages)
+
+    def upload_webdav_file(self, local_path: Path) -> None:
+        if not self.is_webdav_mode():
+            return
+        client = self.ensure_webdav_client()
+        resolved = local_path.resolve()
+        materials_root = self.webdav_cache_materials_dir().resolve()
+        library_root = self.webdav_cache_library_dir().resolve()
+        if materials_root in resolved.parents or resolved == materials_root:
+            relative = resolved.relative_to(materials_root)
+            remote_path = f"{self.webdav_remote_group_root('materials')}/{PurePosixPath(*relative.parts).as_posix()}"
+            existing_root = self.webdav_remote_group_root("materials")
+        elif library_root in resolved.parents or resolved == library_root:
+            relative = resolved.relative_to(library_root)
+            remote_path = f"{self.webdav_remote_group_root('library')}/{PurePosixPath(*relative.parts).as_posix()}"
+            existing_root = self.webdav_remote_group_root("library")
+        else:
+            return
+        client.upload_file(local_path, remote_path, existing_root=existing_root)
+
+    def upload_webdav_files(self, paths: list[Path]) -> None:
+        for path in paths:
+            if path.exists() and path.is_file():
+                self.upload_webdav_file(path)
+
+    def rename_webdav_path(self, old_path: Path, new_path: Path) -> None:
+        if not self.is_webdav_mode():
+            return
+        client = self.ensure_webdav_client()
+        old_resolved = old_path.resolve()
+        new_resolved = new_path.resolve()
+        materials_root = self.webdav_cache_materials_dir().resolve()
+        library_root = self.webdav_cache_library_dir().resolve()
+        if materials_root in old_resolved.parents:
+            old_relative = PurePosixPath(*old_resolved.relative_to(materials_root).parts)
+            new_relative = PurePosixPath(*new_resolved.relative_to(materials_root).parts)
+            client.move(
+                f"{self.webdav_remote_group_root('materials')}/{old_relative.as_posix()}",
+                f"{self.webdav_remote_group_root('materials')}/{new_relative.as_posix()}",
+                existing_root=self.webdav_remote_group_root("materials"),
+            )
+        elif library_root in old_resolved.parents:
+            old_relative = PurePosixPath(*old_resolved.relative_to(library_root).parts)
+            new_relative = PurePosixPath(*new_resolved.relative_to(library_root).parts)
+            client.move(
+                f"{self.webdav_remote_group_root('library')}/{old_relative.as_posix()}",
+                f"{self.webdav_remote_group_root('library')}/{new_relative.as_posix()}",
+                existing_root=self.webdav_remote_group_root("library"),
+            )
+
+    def delete_webdav_path(self, path: Path) -> None:
+        if not self.is_webdav_mode():
+            return
+        client = self.ensure_webdav_client()
+        resolved = path.resolve()
+        materials_root = self.webdav_cache_materials_dir().resolve()
+        library_root = self.webdav_cache_library_dir().resolve()
+        if materials_root in resolved.parents or resolved == materials_root:
+            relative = PurePosixPath(*resolved.relative_to(materials_root).parts)
+            client.delete(f"{self.webdav_remote_group_root('materials')}/{relative.as_posix()}")
+        elif library_root in resolved.parents or resolved == library_root:
+            relative = PurePosixPath(*resolved.relative_to(library_root).parts)
+            client.delete(f"{self.webdav_remote_group_root('library')}/{relative.as_posix()}")
+
+    def sync_storage_mode_ui(self) -> None:
+        is_webdav = self.is_webdav_mode()
+        self.storage_mode_button.setText(
+            self.t("top_storage_mode_webdav") if is_webdav else self.t("top_storage_mode_local")
+        )
+        if is_webdav:
+            self.storage_mode_button.setStyleSheet(
+                "QPushButton { background: #DB93B0; color: #FFF8FB; border: 1px solid #DB93B0; border-radius: 10px; padding: 8px 12px; font-weight: 700; min-height: 18px; }"
+                "QPushButton:hover { background: #CC7FA0; }"
+                "QPushButton:pressed { background: #B86B8D; }"
+            )
+        else:
+            self.storage_mode_button.setStyleSheet(
+                "QPushButton { background: #367496; color: #F3FAFD; border: 1px solid #367496; border-radius: 10px; padding: 8px 12px; font-weight: 700; min-height: 18px; }"
+                "QPushButton:hover { background: #2E6482; }"
+                "QPushButton:pressed { background: #28566F; }"
+        )
+        self.choose_materials_button.setEnabled(not is_webdav)
+        self.choose_library_button.setEnabled(not is_webdav)
+        self.choose_webdav_root_button.setEnabled(True)
+        self.choose_webdav_root_button.setVisible(True)
+        self.webdav_root_label.setVisible(is_webdav)
+        self.update_webdav_root_label()
+
+    def apply_storage_mode_paths(self) -> None:
+        if self.is_webdav_mode():
+            if not self.has_webdav_settings():
+                self.config.materials_dir = ""
+                self.config.library_dir = ""
+            else:
+                materials_dir = self.webdav_cache_materials_dir()
+                library_dir = self.webdav_cache_library_dir()
+                ensure_directory(materials_dir)
+                ensure_directory(library_dir)
+                self.config.materials_dir = str(materials_dir)
+                self.config.library_dir = str(library_dir)
+        else:
+            self.config.materials_dir = self.config.local_materials_dir
+            self.config.library_dir = self.config.local_library_dir
+
+    def set_storage_mode(self, mode: str) -> None:
+        if mode not in {"local", "webdav"}:
+            return
+        if self.config.storage_mode == mode:
+            return
+        if self.config.storage_mode == "local":
+            self.config.local_materials_dir = self.config.materials_dir
+            self.config.local_library_dir = self.config.library_dir
+        self.config.storage_mode = mode
+        if mode == "webdav" and not self.show_webdav_settings_dialog():
+            self.config.storage_mode = "local"
+            return
+        self.apply_storage_mode_paths()
+        self.config.save()
+        self.sync_storage_mode_ui()
+        self.update_materials_label()
+        self.update_library_label()
+        self.reload_palettes()
+
+    def toggle_storage_mode(self) -> None:
+        next_mode = "webdav" if self.config.storage_mode == "local" else "local"
+        self.set_storage_mode(next_mode)
+
+    def show_webdav_settings_dialog(self) -> bool:
+        dialog = WebDavSettingsDialog(self.config, self.ui_language, self.test_webdav_connection, self)
+        if dialog.exec() != QDialog.Accepted:
+            return False
+        values = dialog.values
+        self.config.webdav_url = values["url"]
+        self.config.webdav_username = values["username"]
+        self.config.webdav_password = values["password"]
+        self.config.webdav_root_dir = values["root"]
+        self.webdav_client = None
+        self.apply_storage_mode_paths()
+        self.config.save()
+        self.sync_storage_mode_ui()
+        self.update_materials_label()
+        self.update_library_label()
+        if self.is_webdav_mode() and self.has_webdav_settings():
+            try:
+                self.sync_webdav_from_remote()
+            except WebDavError as exc:
+                QMessageBox.warning(self, "WebDAV", self.t("webdav_sync_failed", message=str(exc)))
+                return False
+            self.statusBar().showMessage(self.t("webdav_ready"), 3500)
+            self.reload_palettes()
+        return True
+
+    def update_selection_summary(self) -> None:
+        self.selection_label.setText(self.t("selected_count", count=len(self.selected_colors)))
+        if not self.selected_colors:
+            self.selected_preview.setText(self.t("no_colors_selected"))
+
+    def apply_language(self) -> None:
+        self.setWindowTitle(self.t("window_title"))
+        self.language_toggle_button.setText(self.t("language_button"))
+        self.choose_materials_button.setText(self.t("top_materials"))
+        self.choose_library_button.setText(self.t("top_library"))
+        self.choose_webdav_root_button.setText(self.t("top_webdav_root"))
+        self.refresh_button.setText(self.t("top_rescan"))
+        self.import_files_button.setText(self.t("top_import_files"))
+        self.import_folder_button.setText(self.t("top_import_folder"))
+        self.paste_image_button.setText(self.t("top_paste_image"))
+        self.update_materials_label()
+        self.update_library_label()
+        self.sync_storage_mode_ui()
+        self.drop_hint_label.setText(self.t("drop_hint"))
+        self.palette_panel_title.setText(self.t("palettes"))
+        self.source_filter_buttons["all"].setText(self.t("filter_all"))
+        self.source_filter_buttons["materials"].setText(self.t("filter_materials"))
+        self.source_filter_buttons["library"].setText(self.t("filter_library"))
+        self.source_filter_buttons["favorites"].setText(self.t("filter_favorites"))
+        self.sort_label.setText(self.t("sort"))
+        self.group_label.setText(self.t("group"))
+        self.search_input.setPlaceholderText(self.t("search_placeholder"))
+        self.count_label.setText(self.t("count"))
+        self.hue_label.setText(self.t("hue"))
+        self.type_label.setText(self.t("type"))
+        self.tag_label.setText(self.t("tag"))
+        self._set_combo_items(
+            self.sort_combo,
+            [
+                (self.t("sort_folder"), "folder"),
+                (self.t("sort_format"), "format"),
+                (self.t("sort_name"), "name"),
+                (self.t("sort_color_count"), "color_count"),
+            ],
+            self.sort_mode,
+        )
+        self._set_combo_items(
+            self.group_combo,
+            [
+                (self.t("group_format"), "format"),
+                (self.t("group_folder"), "folder"),
+                (self.t("group_source"), "source"),
+                (self.t("group_tags"), "tags"),
+                (self.t("group_none"), "none"),
+            ],
+            self.group_mode,
+        )
+        self._set_combo_items(
+            self.count_filter_combo,
+            [
+                (self.t("any"), "any"),
+                ("<= 4", "lte_4"),
+                ("5-8", "5_8"),
+                ("9-16", "9_16"),
+                ("> 16", "gt_16"),
+            ],
+            self.count_filter_combo.currentData() or "any",
+        )
+        self._set_combo_items(
+            self.hue_filter_combo,
+            [
+                (self.t("any"), "any"),
+                (self.t("hue_red"), "Red"),
+                (self.t("hue_orange"), "Orange"),
+                (self.t("hue_yellow"), "Yellow"),
+                (self.t("hue_green"), "Green"),
+                (self.t("hue_cyan"), "Cyan"),
+                (self.t("hue_blue"), "Blue"),
+                (self.t("hue_purple"), "Purple"),
+                (self.t("hue_neutral"), "Neutral"),
+                (self.t("hue_mixed"), "Mixed"),
+            ],
+            self.hue_filter_combo.currentData() or "any",
+        )
+        self._set_combo_items(
+            self.type_filter_combo,
+            [
+                (self.t("any"), "any"),
+                (self.t("type_code_palette"), "Code Palette"),
+                (self.t("type_image"), "Image"),
+                (self.t("type_gradient"), "Gradient"),
+                (self.t("type_document"), "Document"),
+            ],
+            self.type_filter_combo.currentData() or "any",
+        )
+        self.refresh_tag_filter_options()
+        if self.current_palette is None:
+            self.palette_title.setText(self.t("palette_placeholder"))
+            self.palette_meta.setText(self.t("palette_meta_hint"))
+        else:
+            self.show_palette_details(self.current_palette)
+        self.pdf_extractor_button.setText(self.t("open_pdf_extractor"))
+        self.cart_title_label.setText(self.t("cart"))
+        self.cart_info_label.setText(self.t("cart_info"))
+        self.update_selection_summary()
+        self.remove_button.setText(self.t("remove"))
+        self.clear_button.setText(self.t("clear"))
+        self.save_button.setText(self.t("save_palette"))
+        self.gradient_button.setText(self.t("export_gradient"))
+        self.lab_title_label.setText(self.t("color_lab"))
+        self.pick_color_button.setText(self.t("pick"))
+        self.lab_count_label.setText(self.t("count"))
+        self.tint_bias_label.setText(self.t("tint_bias"))
+        self.tint_mode_label.setText(self.t("tint_mode"))
+        self._set_combo_items(
+            self.tint_bias_combo,
+            [
+                (self.t("neutral"), "Neutral"),
+                (self.t("warm"), "Warm"),
+                (self.t("cool"), "Cool"),
+            ],
+            self.tint_bias_combo.currentData() or "Neutral",
+        )
+        self._set_combo_items(
+            self.tint_mode_combo,
+            [
+                (self.t("tint_mode_darkest"), "Base darkest"),
+                (self.t("tint_mode_lightest"), "Base lightest"),
+                (self.t("tint_mode_center"), "Base center"),
+            ],
+            self.tint_mode_combo.currentData() or "Base center",
+        )
+        self.blend_button.setText(self.t("blend_mid"))
+        self.similar_button.setText(self.t("similar"))
+        self.complement_button.setText(self.t("complement"))
+        self.diverging_button.setText(self.t("diverging"))
+        self.tint_button.setText(self.t("tint_ramp"))
+        self.lab_hint_label.setText(self.t("lab_hint"))
+        self.preview_title_label.setText(self.t("chart_preview"))
+        self.preview_mode_label.setText(self.t("mode"))
+        self.preview_normal_button.setText(self.t("normal"))
+        self.preview_colorblind_button.setText(self.t("colorblind"))
+        self.preview_grayscale_button.setText(self.t("grayscale"))
+        self.chart_label.setText(self.t("chart"))
+        self.line_button.setText(self.t("line"))
+        self.bar_button.setText(self.t("bar"))
+        self.scatter_button.setText(self.t("scatter"))
+        self.advanced_preview_button.setText(self.t("advanced_preview"))
+        self.point_label.setText(self.t("point"))
+        self.shape_circle_button.setText(self.t("circle"))
+        self.shape_square_button.setText(self.t("square"))
+        self.shape_triangle_button.setText(self.t("triangle"))
+        self.series_label.setText(self.t("series"))
+        self.group_count_label.setText(self.t("group_count"))
+        self.line_width_label.setText(self.t("line"))
+        self.point_size_label.setText(self.t("point"))
+        self.alpha_label.setText(self.t("alpha"))
+        self.preview_hint_label.setText(self.t("preview_hint"))
+        self.populate_palette_tree()
+
+    def toggle_ui_language(self) -> None:
+        self.ui_language = "en" if self.ui_language == "zh" else "zh"
+        self.config.ui_language = self.ui_language
+        self.config.save()
+        self.apply_language()
 
     def setup_status_bar(self) -> None:
         status_bar = QStatusBar(self)
@@ -1498,31 +2423,43 @@ class MainWindow(QMainWindow):
         top_layout = QHBoxLayout(top_bar)
         top_layout.setContentsMargins(12, 10, 12, 10)
         top_layout.setSpacing(10)
-        choose_materials = QPushButton("Materials")
-        choose_materials.clicked.connect(self.choose_materials_dir)
-        choose_library = QPushButton("Library")
-        choose_library.clicked.connect(self.choose_library_dir)
-        refresh_button = QPushButton("Rescan")
-        refresh_button.clicked.connect(self.reload_palettes)
-        import_files_button = QPushButton("Import Files")
-        import_files_button.clicked.connect(self.import_material_files)
-        import_folder_button = QPushButton("Import Folder")
-        import_folder_button.clicked.connect(self.import_material_folder)
-        paste_image_button = QPushButton("Paste Image")
-        paste_image_button.clicked.connect(self.import_clipboard_image)
+        self.choose_materials_button = QPushButton("Materials")
+        self.choose_materials_button.clicked.connect(self.choose_materials_dir)
+        self.choose_library_button = QPushButton("Library")
+        self.choose_library_button.clicked.connect(self.choose_library_dir)
+        self.storage_mode_button = QPushButton("Local Mode")
+        self.storage_mode_button.clicked.connect(self.toggle_storage_mode)
+        self.choose_webdav_root_button = QPushButton("WebDAV Setting")
+        self.choose_webdav_root_button.clicked.connect(self.show_webdav_settings_dialog)
+        self.refresh_button = QPushButton("Rescan")
+        self.refresh_button.clicked.connect(self.handle_refresh_action)
+        self.import_files_button = QPushButton("Import Files")
+        self.import_files_button.clicked.connect(self.import_material_files)
+        self.import_folder_button = QPushButton("Import Folder")
+        self.import_folder_button.clicked.connect(self.import_material_folder)
+        self.paste_image_button = QPushButton("Paste Image")
+        self.paste_image_button.clicked.connect(self.import_clipboard_image)
+        self.language_toggle_button = QPushButton("EN")
+        self.language_toggle_button.clicked.connect(self.toggle_ui_language)
         self.materials_label = QLabel("Materials: not set")
         self.library_label = QLabel("Library: not set")
+        self.webdav_root_label = QLabel("WebDAV Root: not set")
         self.materials_label.setStyleSheet("color: #475569; background: transparent;")
         self.library_label.setStyleSheet("color: #475569; background: transparent;")
-        top_layout.addWidget(choose_materials)
-        top_layout.addWidget(choose_library)
-        top_layout.addWidget(refresh_button)
-        top_layout.addWidget(import_files_button)
-        top_layout.addWidget(import_folder_button)
-        top_layout.addWidget(paste_image_button)
+        self.webdav_root_label.setStyleSheet("color: #475569; background: transparent;")
+        top_layout.addWidget(self.storage_mode_button)
+        top_layout.addWidget(self.choose_webdav_root_button)
+        top_layout.addWidget(self.choose_materials_button)
+        top_layout.addWidget(self.choose_library_button)
+        top_layout.addWidget(self.refresh_button)
+        top_layout.addWidget(self.import_files_button)
+        top_layout.addWidget(self.import_folder_button)
+        top_layout.addWidget(self.paste_image_button)
+        top_layout.addWidget(self.language_toggle_button)
         top_layout.addSpacing(8)
         top_layout.addWidget(self.materials_label, 1)
         top_layout.addWidget(self.library_label, 1)
+        top_layout.addWidget(self.webdav_root_label, 1)
         root_layout.addWidget(top_bar)
         content_splitter = QSplitter(Qt.Horizontal)
         content_splitter.setChildrenCollapsible(False)
@@ -1564,15 +2501,16 @@ class MainWindow(QMainWindow):
         self.drop_hint_label.setWordWrap(True)
         self.drop_hint_label.setStyleSheet("background: #FFFFFF; color: #475569; border: 1px dashed #94A3B8; border-radius: 10px; padding: 8px;")
         layout.addWidget(self.drop_hint_label)
-        title = QLabel("Palettes")
-        title.setStyleSheet("font-weight: 700; background: transparent;")
-        set_widget_font(title, pixel_size=18, bold=True)
-        layout.addWidget(title)
+        self.palette_panel_title = QLabel("Palettes")
+        self.palette_panel_title.setStyleSheet("font-weight: 700; background: transparent;")
+        set_widget_font(self.palette_panel_title, pixel_size=18, bold=True)
+        layout.addWidget(self.palette_panel_title)
 
         filter_row = QHBoxLayout()
         filter_row.setSpacing(6)
         self.filter_group = QButtonGroup(self)
         self.filter_group.setExclusive(True)
+        self.source_filter_buttons: dict[str, QPushButton] = {}
         for label, key in (("All", "all"), ("Materials", "materials"), ("Library", "library"), ("Favorites", "favorites")):
             button = QPushButton(label)
             button.setCheckable(True)
@@ -1580,21 +2518,20 @@ class MainWindow(QMainWindow):
                 button.setChecked(True)
             button.clicked.connect(lambda _checked, value=key: self.set_source_filter(value))
             self.filter_group.addButton(button)
+            self.source_filter_buttons[key] = button
             filter_row.addWidget(button)
         layout.addLayout(filter_row)
 
         organize_row = QHBoxLayout()
         organize_row.setSpacing(6)
-        organize_row.addWidget(QLabel("Sort"))
+        self.sort_label = QLabel("Sort")
+        organize_row.addWidget(self.sort_label)
         self.sort_combo = QComboBox()
-        self.sort_combo.addItems(["Folder", "Format", "Name", "Color Count"] )
-        self.sort_combo.setCurrentText("Folder")
         self.sort_combo.currentTextChanged.connect(self.on_sort_or_group_changed)
         organize_row.addWidget(self.sort_combo)
-        organize_row.addWidget(QLabel("Group"))
+        self.group_label = QLabel("Group")
+        organize_row.addWidget(self.group_label)
         self.group_combo = QComboBox()
-        self.group_combo.addItems(["Format", "Folder", "Source", "Tags", "None"])
-        self.group_combo.setCurrentText("Format")
         self.group_combo.currentTextChanged.connect(self.on_sort_or_group_changed)
         organize_row.addWidget(self.group_combo)
         layout.addLayout(organize_row)
@@ -1609,28 +2546,28 @@ class MainWindow(QMainWindow):
 
         filter_top_row = QHBoxLayout()
         filter_top_row.setSpacing(6)
-        filter_top_row.addWidget(QLabel("Count"))
+        self.count_label = QLabel("Count")
+        filter_top_row.addWidget(self.count_label)
         self.count_filter_combo = QComboBox()
-        self.count_filter_combo.addItems(["Any", "<= 4", "5-8", "9-16", "> 16"])
         self.count_filter_combo.currentTextChanged.connect(self.populate_palette_tree)
         filter_top_row.addWidget(self.count_filter_combo)
-        filter_top_row.addWidget(QLabel("Hue"))
+        self.hue_label = QLabel("Hue")
+        filter_top_row.addWidget(self.hue_label)
         self.hue_filter_combo = QComboBox()
-        self.hue_filter_combo.addItems(["Any", "Red", "Orange", "Yellow", "Green", "Cyan", "Blue", "Purple", "Neutral", "Mixed"] )
         self.hue_filter_combo.currentTextChanged.connect(self.populate_palette_tree)
         filter_top_row.addWidget(self.hue_filter_combo)
         layout.addLayout(filter_top_row)
 
         filter_bottom_row = QHBoxLayout()
         filter_bottom_row.setSpacing(6)
-        filter_bottom_row.addWidget(QLabel("Type"))
+        self.type_label = QLabel("Type")
+        filter_bottom_row.addWidget(self.type_label)
         self.type_filter_combo = QComboBox()
-        self.type_filter_combo.addItems(["Any", "Code Palette", "Image", "Gradient", "Document"])
         self.type_filter_combo.currentTextChanged.connect(self.populate_palette_tree)
         filter_bottom_row.addWidget(self.type_filter_combo)
-        filter_bottom_row.addWidget(QLabel("Tag"))
+        self.tag_label = QLabel("Tag")
+        filter_bottom_row.addWidget(self.tag_label)
         self.tag_filter_combo = QComboBox()
-        self.tag_filter_combo.addItems(["Any"] )
         self.tag_filter_combo.currentTextChanged.connect(self.populate_palette_tree)
         filter_bottom_row.addWidget(self.tag_filter_combo)
         layout.addLayout(filter_bottom_row)
@@ -1691,14 +2628,14 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(6)
-        title = QLabel("Cart")
-        title.setStyleSheet("font-weight: 700; background: transparent;")
-        set_widget_font(title, pixel_size=18, bold=True)
-        layout.addWidget(title)
-        info = QLabel("右侧颜色加入这里。拖拽排序后保存，会按当前顺序导出。")
-        info.setWordWrap(True)
-        info.setStyleSheet("color: #475569; background: transparent;")
-        layout.addWidget(info)
+        self.cart_title_label = QLabel("Cart")
+        self.cart_title_label.setStyleSheet("font-weight: 700; background: transparent;")
+        set_widget_font(self.cart_title_label, pixel_size=18, bold=True)
+        layout.addWidget(self.cart_title_label)
+        self.cart_info_label = QLabel("右侧颜色加入这里。拖拽排序后保存，会按当前顺序导出。")
+        self.cart_info_label.setWordWrap(True)
+        self.cart_info_label.setStyleSheet("color: #475569; background: transparent;")
+        layout.addWidget(self.cart_info_label)
         self.selection_label = QLabel("Selected: 0")
         self.selection_label.setStyleSheet("font-weight: 700; background: transparent;")
         layout.addWidget(self.selection_label)
@@ -1717,22 +2654,23 @@ class MainWindow(QMainWindow):
         )
         layout.addWidget(self.selected_preview)
         button_row = QHBoxLayout()
-        remove_button = QPushButton("Remove")
-        remove_button.clicked.connect(self.remove_selected_cart_item)
-        clear_button = QPushButton("Clear")
-        clear_button.clicked.connect(self.clear_selected_colors)
-        save_button = QPushButton("Save Palette")
-        save_button.clicked.connect(self.save_selected_palette)
-        gradient_button = QPushButton("Export Gradient")
-        gradient_button.clicked.connect(self.export_gradient_palette)
-        button_row.addWidget(remove_button)
-        button_row.addWidget(clear_button)
-        button_row.addWidget(save_button)
-        button_row.addWidget(gradient_button)
+        self.remove_button = QPushButton("Remove")
+        self.remove_button.clicked.connect(self.remove_selected_cart_item)
+        self.clear_button = QPushButton("Clear")
+        self.clear_button.clicked.connect(self.clear_selected_colors)
+        self.save_button = QPushButton("Save Palette")
+        self.save_button.clicked.connect(self.save_selected_palette)
+        self.gradient_button = QPushButton("Export Gradient")
+        self.gradient_button.clicked.connect(self.export_gradient_palette)
+        button_row.addWidget(self.remove_button)
+        button_row.addWidget(self.clear_button)
+        button_row.addWidget(self.save_button)
+        button_row.addWidget(self.gradient_button)
         layout.addLayout(button_row)
-        lab_title = QLabel("Color Lab")
-        lab_title.setStyleSheet("font-weight: 700; background: transparent;")
-        set_widget_font(lab_title, pixel_size=16, bold=True)
+        self.lab_title_label = QLabel("Color Lab")
+        self.lab_title_label.setStyleSheet("font-weight: 700; background: transparent;")
+        set_widget_font(self.lab_title_label, pixel_size=16, bold=True)
+        layout.addWidget(self.lab_title_label)
         lab_row = QHBoxLayout()
         self.lab_color_preview = QFrame()
         self.lab_color_preview.setFixedSize(30, 30)
@@ -1745,48 +2683,49 @@ class MainWindow(QMainWindow):
         self.lab_wheel_combo = QComboBox()
         self.lab_wheel_combo.addItems(["RGB", "RYB-like"])
         lab_row.addWidget(self.lab_wheel_combo)
-        dialog_button = QPushButton("Pick")
-        dialog_button.clicked.connect(self.pick_lab_color)
-        lab_row.addWidget(dialog_button)
+        self.pick_color_button = QPushButton("Pick")
+        self.pick_color_button.clicked.connect(self.pick_lab_color)
+        lab_row.addWidget(self.pick_color_button)
         lab_row.addStretch(1)
         layout.addLayout(lab_row)
         option_row = QHBoxLayout()
-        option_row.addWidget(QLabel("Count"))
+        self.lab_count_label = QLabel("Count")
+        option_row.addWidget(self.lab_count_label)
         self.lab_count_input = QLineEdit("5")
         self.lab_count_input.setFixedWidth(48)
         self.lab_count_input.setValidator(QIntValidator(2, 20, self))
         option_row.addWidget(self.lab_count_input)
-        option_row.addWidget(QLabel("Tint bias"))
+        self.tint_bias_label = QLabel("Tint bias")
+        option_row.addWidget(self.tint_bias_label)
         self.tint_bias_combo = QComboBox()
-        self.tint_bias_combo.addItems(["Neutral", "Warm", "Cool"])
         option_row.addWidget(self.tint_bias_combo)
-        option_row.addWidget(QLabel("Tint mode"))
+        self.tint_mode_label = QLabel("Tint mode")
+        option_row.addWidget(self.tint_mode_label)
         self.tint_mode_combo = QComboBox()
-        self.tint_mode_combo.addItems(["Base darkest", "Base lightest", "Base center"])
         option_row.addWidget(self.tint_mode_combo)
         option_row.addStretch(1)
         layout.addLayout(option_row)
         lab_button_row = QHBoxLayout()
-        blend_button = QPushButton("Blend Mid")
-        blend_button.clicked.connect(self.add_blended_lab_colors)
-        similar_button = QPushButton("Similar")
-        similar_button.clicked.connect(self.add_similar_lab_colors)
-        complement_button = QPushButton("Complement")
-        complement_button.clicked.connect(self.add_complementary_lab_colors)
-        diverging_button = QPushButton("Diverging")
-        diverging_button.clicked.connect(self.add_diverging_lab_colors)
-        tint_button = QPushButton("Tint Ramp")
-        tint_button.clicked.connect(self.add_tint_lab_colors)
-        lab_button_row.addWidget(blend_button)
-        lab_button_row.addWidget(similar_button)
-        lab_button_row.addWidget(complement_button)
-        lab_button_row.addWidget(diverging_button)
-        lab_button_row.addWidget(tint_button)
+        self.blend_button = QPushButton("Blend Mid")
+        self.blend_button.clicked.connect(self.add_blended_lab_colors)
+        self.similar_button = QPushButton("Similar")
+        self.similar_button.clicked.connect(self.add_similar_lab_colors)
+        self.complement_button = QPushButton("Complement")
+        self.complement_button.clicked.connect(self.add_complementary_lab_colors)
+        self.diverging_button = QPushButton("Diverging")
+        self.diverging_button.clicked.connect(self.add_diverging_lab_colors)
+        self.tint_button = QPushButton("Tint Ramp")
+        self.tint_button.clicked.connect(self.add_tint_lab_colors)
+        lab_button_row.addWidget(self.blend_button)
+        lab_button_row.addWidget(self.similar_button)
+        lab_button_row.addWidget(self.complement_button)
+        lab_button_row.addWidget(self.diverging_button)
+        lab_button_row.addWidget(self.tint_button)
         layout.addLayout(lab_button_row)
-        hint = QLabel("提示：右侧选中 2 个或以上颜色时，Blend Mid 和 Diverging 会插入到这些颜色之间，而不是追加到末尾。")
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: #64748B; background: transparent;")
-        layout.addWidget(hint)
+        self.lab_hint_label = QLabel("提示：右侧选中 2 个或以上颜色时，Blend Mid 和 Diverging 会插入到这些颜色之间，而不是追加到末尾。")
+        self.lab_hint_label.setWordWrap(True)
+        self.lab_hint_label.setStyleSheet("color: #64748B; background: transparent;")
+        layout.addWidget(self.lab_hint_label)
         return panel
     def build_preview_panel(self) -> QWidget:
         panel = QFrame()
@@ -1794,13 +2733,14 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(6)
-        title = QLabel("Chart Preview")
-        title.setStyleSheet("font-weight: 700; background: transparent;")
-        set_widget_font(title, pixel_size=18, bold=True)
-        layout.addWidget(title)
+        self.preview_title_label = QLabel("Chart Preview")
+        self.preview_title_label.setStyleSheet("font-weight: 700; background: transparent;")
+        set_widget_font(self.preview_title_label, pixel_size=18, bold=True)
+        layout.addWidget(self.preview_title_label)
         mode_row = QHBoxLayout()
         mode_row.setSpacing(6)
-        mode_row.addWidget(QLabel("Mode"))
+        self.preview_mode_label = QLabel("Mode")
+        mode_row.addWidget(self.preview_mode_label)
         self.preview_normal_button = QPushButton("Normal")
         self.preview_normal_button.setCheckable(True)
         self.preview_normal_button.setChecked(True)
@@ -1825,7 +2765,8 @@ class MainWindow(QMainWindow):
         layout.addLayout(mode_row)
         chart_row = QHBoxLayout()
         chart_row.setSpacing(6)
-        chart_row.addWidget(QLabel("Chart"))
+        self.chart_label = QLabel("Chart")
+        chart_row.addWidget(self.chart_label)
         self.line_button = QPushButton("Line")
         self.line_button.setCheckable(True)
         self.bar_button = QPushButton("Bar")
@@ -1839,15 +2780,16 @@ class MainWindow(QMainWindow):
         chart_row.addWidget(self.line_button)
         chart_row.addWidget(self.bar_button)
         chart_row.addWidget(self.scatter_button)
-        advanced_preview_button = QPushButton("Advanced Preview")
-        advanced_preview_button.clicked.connect(self.open_advanced_preview_dialog)
+        self.advanced_preview_button = QPushButton("Advanced Preview")
+        self.advanced_preview_button.clicked.connect(self.open_advanced_preview_dialog)
         chart_row.addSpacing(12)
-        chart_row.addWidget(advanced_preview_button)
+        chart_row.addWidget(self.advanced_preview_button)
         chart_row.addStretch(1)
         layout.addLayout(chart_row)
         shape_row = QHBoxLayout()
         shape_row.setSpacing(6)
-        shape_row.addWidget(QLabel("Point"))
+        self.point_label = QLabel("Point")
+        shape_row.addWidget(self.point_label)
         self.shape_circle_button = QPushButton("Circle")
         self.shape_square_button = QPushButton("Square")
         self.shape_triangle_button = QPushButton("Triangle")
@@ -1860,49 +2802,72 @@ class MainWindow(QMainWindow):
         layout.addLayout(shape_row)
         metric_row = QHBoxLayout()
         metric_row.setSpacing(6)
-        metric_row.addWidget(QLabel("Series"))
+        self.series_label = QLabel("Series")
+        metric_row.addWidget(self.series_label)
         self.series_input = QLineEdit("5")
         self.series_input.setFixedWidth(40)
         self.series_input.editingFinished.connect(self.update_chart_preview)
         metric_row.addWidget(self.series_input)
-        metric_row.addWidget(QLabel("Group"))
+        self.group_count_label = QLabel("Group")
+        metric_row.addWidget(self.group_count_label)
         self.group_input = QLineEdit("4")
         self.group_input.setFixedWidth(40)
         self.group_input.editingFinished.connect(self.update_chart_preview)
         metric_row.addWidget(self.group_input)
-        metric_row.addWidget(QLabel("Line"))
+        self.line_width_label = QLabel("Line")
+        metric_row.addWidget(self.line_width_label)
         self.line_width_input = QLineEdit("2")
         self.line_width_input.setFixedWidth(40)
         self.line_width_input.editingFinished.connect(self.update_chart_preview)
         metric_row.addWidget(self.line_width_input)
-        metric_row.addWidget(QLabel("Point"))
+        self.point_size_label = QLabel("Point")
+        metric_row.addWidget(self.point_size_label)
         self.point_size_input = QLineEdit("5")
         self.point_size_input.setFixedWidth(40)
         self.point_size_input.editingFinished.connect(self.update_chart_preview)
         metric_row.addWidget(self.point_size_input)
-        metric_row.addWidget(QLabel("Alpha"))
+        self.alpha_label = QLabel("Alpha")
+        metric_row.addWidget(self.alpha_label)
         self.alpha_input = QLineEdit("100")
         self.alpha_input.setFixedWidth(46)
         self.alpha_input.editingFinished.connect(self.update_chart_preview)
         metric_row.addWidget(self.alpha_input)
         metric_row.addStretch(1)
         layout.addLayout(metric_row)
-        hint = QLabel("提示：预览可在正常、色盲模拟、黑白之间切换。Alpha 只影响预览，不影响导出。")
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: #475569; background: transparent;")
-        layout.addWidget(hint)
+        self.preview_hint_label = QLabel("提示：预览可在正常、色盲模拟、黑白之间切换。Alpha 只影响预览，不影响导出。")
+        self.preview_hint_label.setWordWrap(True)
+        self.preview_hint_label.setStyleSheet("color: #475569; background: transparent;")
+        layout.addWidget(self.preview_hint_label)
         self.chart_preview = ChartPreviewWidget()
         layout.addWidget(self.chart_preview, 1)
         return panel
     def load_initial_state(self) -> None:
-        if self.config.materials_dir:
-            self.materials_label.setText(f"Materials: {self.config.materials_dir}")
-        if self.config.library_dir:
-            self.library_label.setText(f"Library: {self.config.library_dir}")
+        if not self.config.local_materials_dir and self.config.materials_dir:
+            self.config.local_materials_dir = self.config.materials_dir
+        if not self.config.local_library_dir and self.config.library_dir:
+            self.config.local_library_dir = self.config.library_dir
+        self.apply_storage_mode_paths()
+        self.update_materials_label()
+        self.update_library_label()
+        self.sync_storage_mode_ui()
+        if self.is_webdav_mode() and self.has_webdav_settings():
+            try:
+                self.sync_webdav_from_remote()
+            except WebDavError:
+                pass
         if self.config.materials_dir or self.config.library_dir:
             self.reload_palettes()
         if not self.config.welcome_seen:
             QTimer.singleShot(0, self.show_first_run_guide)
+
+    def handle_refresh_action(self) -> None:
+        if self.is_webdav_mode() and self.has_webdav_settings():
+            try:
+                self.sync_webdav_from_remote()
+            except WebDavError as exc:
+                self.statusBar().showMessage(self.t("webdav_sync_failed", message=str(exc)), 5000)
+                return
+        self.reload_palettes()
     def show_first_run_guide(self) -> None:
         message = (
             "\u91cd\u8981\u63d0\u793a\n\n"
@@ -1922,43 +2887,51 @@ class MainWindow(QMainWindow):
         self.config.save()
 
     def choose_materials_dir(self) -> None:
+        if self.is_webdav_mode():
+            self.show_webdav_settings_dialog()
+            return
         selected = QFileDialog.getExistingDirectory(
             self, "Choose Materials Folder", self.config.materials_dir or str(self.base_dir)
         )
         if not selected:
             return
+        self.config.local_materials_dir = selected
         self.config.materials_dir = selected
         self.config.save()
-        self.materials_label.setText(f"Materials: {selected}")
+        self.update_materials_label()
         self.reload_palettes()
 
     def choose_library_dir(self) -> None:
+        if self.is_webdav_mode():
+            self.show_webdav_settings_dialog()
+            return
         selected = QFileDialog.getExistingDirectory(
             self, "Choose Library Folder", self.config.library_dir or str(self.base_dir)
         )
         if not selected:
             return
+        self.config.local_library_dir = selected
         self.config.library_dir = selected
         self.config.save()
-        self.library_label.setText(f"Library: {selected}")
+        self.update_library_label()
         self.reload_palettes()
 
     def dragEnterEvent(self, event) -> None:  # noqa: N802
         if event.mimeData().hasUrls():
             if hasattr(self, "drop_hint_label"):
-                self.drop_hint_label.setText("松开鼠标即可导入到 Materials")
+                self.drop_hint_label.setText(self.t("drop_hint_release"))
             event.acceptProposedAction()
             return
         super().dragEnterEvent(event)
 
     def dragLeaveEvent(self, event) -> None:  # noqa: N802
         if hasattr(self, "drop_hint_label"):
-            self.drop_hint_label.setText("拖入文件/文件夹到窗口，或用上方 Import / Paste Image")
+            self.drop_hint_label.setText(self.t("drop_hint"))
         super().dragLeaveEvent(event)
 
     def dropEvent(self, event) -> None:  # noqa: N802
         if hasattr(self, "drop_hint_label"):
-            self.drop_hint_label.setText("拖入文件/文件夹到窗口，或用上方 Import / Paste Image")
+            self.drop_hint_label.setText(self.t("drop_hint"))
         urls = event.mimeData().urls()
         if not urls:
             super().dropEvent(event)
@@ -2023,6 +2996,11 @@ class MainWindow(QMainWindow):
         if not pixmap.save(str(target), "PNG"):
             QMessageBox.warning(self, "Import Failed", "Could not save clipboard image.")
             return
+        try:
+            self.upload_webdav_file(target)
+        except WebDavError as exc:
+            QMessageBox.warning(self, "WebDAV", self.t("webdav_sync_failed", message=str(exc)))
+            return
         self.pending_select_source_path = str(target)
         self.reload_palettes()
         self.statusBar().showMessage("Imported clipboard image", 3000)
@@ -2033,6 +3011,7 @@ class MainWindow(QMainWindow):
         ensure_directory(materials_root)
         imported = 0
         last_file_target: Path | None = None
+        uploaded_files: list[Path] = []
         for path in paths:
             if not path.exists():
                 continue
@@ -2040,15 +3019,22 @@ class MainWindow(QMainWindow):
                 if path.is_dir():
                     target = self.unique_target_path(materials_root / path.name)
                     shutil.copytree(path, target)
+                    uploaded_files.extend(file for file in target.rglob("*") if file.is_file())
                     imported += 1
                 else:
                     target = self.unique_target_path(materials_root / path.name)
                     shutil.copy2(path, target)
                     last_file_target = target
+                    uploaded_files.append(target)
                     imported += 1
             except Exception:
                 continue
         if imported:
+            try:
+                self.upload_webdav_files(uploaded_files)
+            except WebDavError as exc:
+                QMessageBox.warning(self, "WebDAV", self.t("webdav_sync_failed", message=str(exc)))
+                return 0
             self.pending_select_source_path = str(last_file_target) if last_file_target is not None else None
             self.reload_palettes()
             self.statusBar().showMessage(f"Imported {imported} item(s) into materials", 3500)
@@ -2092,16 +3078,16 @@ class MainWindow(QMainWindow):
     def open_palette_tree_menu(self, position) -> None:
         menu = QMenu(self)
         selected = self.get_selected_palette_items()
-        favorite_action = menu.addAction("Toggle Favorite")
-        unfavorite_action = menu.addAction("Remove Favorite")
-        add_group_action = menu.addAction("Add Tag")
-        remove_group_action = menu.addAction("Remove Tag")
-        copy_action = menu.addAction("Copy File")
-        add_colors_action = menu.addAction("Add Colors")
-        rename_action = menu.addAction("Rename")
-        extract_action = menu.addAction("Extract Theme")
-        pdf_action = menu.addAction("Open PDF Extractor")
-        delete_action = menu.addAction("Delete To Recycle Bin")
+        favorite_action = menu.addAction(ui_text(self.ui_language, "menu_toggle_favorite"))
+        unfavorite_action = menu.addAction(ui_text(self.ui_language, "menu_remove_favorite"))
+        add_group_action = menu.addAction(ui_text(self.ui_language, "menu_add_tag"))
+        remove_group_action = menu.addAction(ui_text(self.ui_language, "menu_remove_tag"))
+        copy_action = menu.addAction(ui_text(self.ui_language, "menu_copy_file"))
+        add_colors_action = menu.addAction(ui_text(self.ui_language, "menu_add_colors"))
+        rename_action = menu.addAction(ui_text(self.ui_language, "menu_rename"))
+        extract_action = menu.addAction(ui_text(self.ui_language, "menu_extract_theme"))
+        pdf_action = menu.addAction(ui_text(self.ui_language, "menu_open_pdf_extractor"))
+        delete_action = menu.addAction(ui_text(self.ui_language, "menu_delete_recycle"))
         if not selected:
             favorite_action.setEnabled(False)
             unfavorite_action.setEnabled(False)
@@ -2181,10 +3167,10 @@ class MainWindow(QMainWindow):
         if not selected:
             return
         existing = ", ".join(self.config.group_names())
-        prompt = "Tag name:"
+        prompt = ui_text(self.ui_language, "add_tag_prompt")
         if existing:
-            prompt += f"\nExisting: {existing}"
-        group_name, ok = QInputDialog.getText(self, "Add Tag", prompt)
+            prompt += f"\n{ui_text(self.ui_language, 'existing_tags', tags=existing)}"
+        group_name, ok = QInputDialog.getText(self, ui_text(self.ui_language, "add_tag_title"), prompt)
         if not ok or not group_name.strip():
             return
         changed = 0
@@ -2202,9 +3188,16 @@ class MainWindow(QMainWindow):
             return
         group_names = self.config.group_names()
         if not group_names:
-            QMessageBox.information(self, "No Tags", "No tags exist yet.")
+            QMessageBox.information(self, ui_text(self.ui_language, "no_tags_title"), ui_text(self.ui_language, "no_tags_message"))
             return
-        group_name, ok = QInputDialog.getItem(self, "Remove Tag", "Tag:", group_names, 0, False)
+        group_name, ok = QInputDialog.getItem(
+            self,
+            ui_text(self.ui_language, "remove_tag_title"),
+            ui_text(self.ui_language, "tag_label"),
+            group_names,
+            0,
+            False,
+        )
         if not ok or not group_name:
             return
         changed = 0
@@ -2219,19 +3212,25 @@ class MainWindow(QMainWindow):
     def refresh_tag_filter_options(self) -> None:
         if not hasattr(self, "tag_filter_combo"):
             return
-        current = self.tag_filter_combo.currentText()
-        tags = ["Any"] + self.config.group_names()
+        current_data = self.tag_filter_combo.currentData()
+        current_text = self.tag_filter_combo.currentText()
         self.tag_filter_combo.blockSignals(True)
         self.tag_filter_combo.clear()
-        self.tag_filter_combo.addItems(tags)
-        self.tag_filter_combo.setCurrentText(current if current in tags else "Any")
+        self.tag_filter_combo.addItem(self.t("any"), "any")
+        for tag in self.config.group_names():
+            self.tag_filter_combo.addItem(tag, tag)
+        if current_data and current_data != "any":
+            index = self.tag_filter_combo.findData(current_data)
+        else:
+            index = self.tag_filter_combo.findData(current_text)
+        self.tag_filter_combo.setCurrentIndex(index if index >= 0 else 0)
         self.tag_filter_combo.blockSignals(False)
     def set_source_filter(self, value: str) -> None:
         self.active_source_filter = value
         self.populate_palette_tree()
     def on_sort_or_group_changed(self) -> None:
-        self.sort_mode = self.sort_combo.currentText().lower().replace(" ", "_")
-        self.group_mode = self.group_combo.currentText().lower().replace(" ", "_")
+        self.sort_mode = str(self.sort_combo.currentData() or "folder")
+        self.group_mode = str(self.group_combo.currentData() or "format")
         self.populate_palette_tree()
     def reload_palettes(self) -> None:
         self.palettes = []
@@ -2263,8 +3262,8 @@ class MainWindow(QMainWindow):
             return
         self.current_palette = None
         self.color_container.clear()
-        self.palette_title.setText("选择一个色卡")
-        self.palette_meta.setText("点击左侧色卡后，中间展开颜色。左键复制，右键加入右侧拼配区。")
+        self.palette_title.setText(self.t("palette_placeholder"))
+        self.palette_meta.setText(self.t("palette_meta_hint"))
         if hasattr(self, "image_preview_label"):
             self.image_preview_label.clear_preview()
             self.image_preview_label.hide()
@@ -2342,10 +3341,10 @@ class MainWindow(QMainWindow):
         return [palette for palette in self.palettes if palette.source_group == self.active_source_filter]
     def get_tree_section_label(self, palette: Palette) -> str:
         if self.active_source_filter == "favorites":
-            return "Favorites"
+            return self.t("section_favorites")
         if self.group_mode == "tags":
-            return f"Tag: {self.get_palette_manual_group_label(palette)}"
-        return palette.source_group.title()
+            return self.t("prefix_tag", value=self.get_palette_manual_group_label(palette))
+        return self.t(f"section_{palette.source_group}")
     def ensure_tree_group_path(self, root: QTreeWidgetItem, palette: Palette) -> QTreeWidgetItem:
         parts: list[str] = []
         if self.group_mode == "folder":
@@ -2423,32 +3422,32 @@ class MainWindow(QMainWindow):
                 haystack.append(str(palette.source_path).lower())
             if not any(search_text in value for value in haystack):
                 return False
-        count_mode = self.count_filter_combo.currentText() if hasattr(self, "count_filter_combo") else "Any"
+        count_mode = self.count_filter_combo.currentData() if hasattr(self, "count_filter_combo") else "any"
         color_count = len(palette.colors)
-        if count_mode == "<= 4" and color_count > 4:
+        if count_mode == "lte_4" and color_count > 4:
             return False
-        if count_mode == "5-8" and not (5 <= color_count <= 8):
+        if count_mode == "5_8" and not (5 <= color_count <= 8):
             return False
-        if count_mode == "9-16" and not (9 <= color_count <= 16):
+        if count_mode == "9_16" and not (9 <= color_count <= 16):
             return False
-        if count_mode == "> 16" and color_count <= 16:
+        if count_mode == "gt_16" and color_count <= 16:
             return False
-        hue_mode = self.hue_filter_combo.currentText() if hasattr(self, "hue_filter_combo") else "Any"
-        if hue_mode != "Any" and self.get_palette_hue_label(palette) != hue_mode:
+        hue_mode = self.hue_filter_combo.currentData() if hasattr(self, "hue_filter_combo") else "any"
+        if hue_mode != "any" and self.get_palette_hue_label(palette) != hue_mode:
             return False
-        type_mode = self.type_filter_combo.currentText() if hasattr(self, "type_filter_combo") else "Any"
-        if type_mode != "Any" and self.get_palette_type_label(palette) != type_mode:
+        type_mode = self.type_filter_combo.currentData() if hasattr(self, "type_filter_combo") else "any"
+        if type_mode != "any" and self.get_palette_type_label(palette) != type_mode:
             return False
         if self.group_mode == "tags":
             if palette.source_path is None:
                 return False
             if not self.config.groups_for_path(str(palette.source_path)):
                 return False
-        tag_mode = self.tag_filter_combo.currentText() if hasattr(self, "tag_filter_combo") else "Any"
-        if tag_mode != "Any":
+        tag_mode = self.tag_filter_combo.currentData() if hasattr(self, "tag_filter_combo") else "any"
+        if tag_mode != "any":
             if palette.source_path is None:
                 return False
-            if tag_mode not in self.config.groups_for_path(str(palette.source_path)):
+            if str(tag_mode) not in self.config.groups_for_path(str(palette.source_path)):
                 return False
         return True
     def sort_palettes(self, palettes: list[Palette]) -> list[Palette]:
@@ -2468,14 +3467,14 @@ class MainWindow(QMainWindow):
         )
     def get_palette_group_label(self, palette: Palette) -> str:
         if self.group_mode == "none":
-            return "All palettes"
+            return self.t("all_palettes")
         if self.group_mode == "format":
-            return f"Format: {palette.source_format.upper()}"
+            return self.t("prefix_format", value=palette.source_format.upper())
         if self.group_mode == "source":
-            return f"Source: {palette.source_group.title()}"
+            return self.t("prefix_source", value=self.t(f"section_{palette.source_group}"))
         if self.group_mode == "tags":
-            return f"Tag: {self.get_palette_manual_group_label(palette)}"
-        return f"Folder: {self.get_palette_folder_label(palette)}"
+            return self.t("prefix_tag", value=self.get_palette_manual_group_label(palette))
+        return self.t("prefix_folder", value=self.get_palette_folder_label(palette))
     def get_palette_folder_label(self, palette: Palette) -> str:
         if palette.source_path is None:
             return "Generated"
@@ -2551,16 +3550,15 @@ class MainWindow(QMainWindow):
     def show_palette_details(self, palette: Palette) -> None:
         self.current_palette = palette
         self.palette_title.setText(palette.name)
-        source = str(palette.source_path) if palette.source_path else "Generated"
+        source = str(palette.source_path) if palette.source_path else self.t("generated")
+        source_group_label = self.t(f"section_{palette.source_group}")
         if palette.source_format == "pdf":
             page_count = palette.metadata.get("page_count", "?")
-            self.palette_meta.setText(
-                f"{len(palette.colors)} preview colors | PDF | {page_count} pages | Source: {source}"
-            )
+            self.palette_meta.setText(self.t("palette_meta_pdf", count=len(palette.colors), pages=page_count, source=source))
             self.pdf_extractor_button.show()
         else:
             self.palette_meta.setText(
-                f"{len(palette.colors)} colors | {palette.source_group} | Source: {source}"
+                self.t("palette_meta_regular", count=len(palette.colors), group=source_group_label, source=source)
             )
             self.pdf_extractor_button.hide()
         self.update_source_preview(palette)
@@ -2678,7 +3676,9 @@ class MainWindow(QMainWindow):
             return
         palette.source_group = self.current_palette.source_group
         self.palette_title.setText(f"{palette.name} (selection)")
-        self.palette_meta.setText(f"{len(palette.colors)} colors | selection grid | Source: {palette.source_path}")
+        self.palette_meta.setText(
+            self.t("palette_meta_selection", count=len(palette.colors), source=palette.source_path)
+        )
         self.render_palette_colors(palette)
         self.statusBar().showMessage(f"Extracted {rows}x{cols} from selection", 3000)
     def add_current_palette_colors(self) -> None:
@@ -2900,9 +3900,9 @@ class MainWindow(QMainWindow):
         self.update_chart_preview()
 
     def refresh_selected_preview(self) -> None:
-        self.selection_label.setText(f"Selected: {len(self.selected_colors)}")
+        self.selection_label.setText(self.t("selected_count", count=len(self.selected_colors)))
         if not self.selected_colors:
-            self.selected_preview.setText("No colors selected")
+            self.selected_preview.setText(self.t("no_colors_selected"))
             return
         preview = "  ".join(color.hex_code for color in self.selected_colors)
         self.selected_preview.setText(preview)
@@ -2968,7 +3968,11 @@ class MainWindow(QMainWindow):
             if not self.config.library_dir:
                 QMessageBox.information(self, "Library Folder Missing", "Choose a library folder first.")
                 return
-            exported_path = self.export_palette_files(target_key, palette)
+            try:
+                exported_path = self.export_palette_files(target_key, palette)
+            except WebDavError as exc:
+                QMessageBox.warning(self, "WebDAV", self.t("webdav_sync_failed", message=str(exc)))
+                return
             if exported_path is not None:
                 self.pending_select_source_path = str(exported_path)
             self.reload_palettes()
@@ -3021,6 +4025,7 @@ class MainWindow(QMainWindow):
         ensure_directory(library_palettes_dir)
         library_json_path = library_palettes_dir / f"{file_stem}.json"
         save_palette_json(palette, library_json_path)
+        created_files: list[Path] = [library_json_path]
         if target_key == "all_formats":
             for export_key in ("originlab", "general", "r", "python", "matlab"):
                 self.export_palette_files(export_key, palette)
@@ -3028,16 +4033,27 @@ class MainWindow(QMainWindow):
         exports_root = Path(self.config.library_dir) / "exports" / target_key
         ensure_directory(exports_root)
         if target_key == "general":
-            save_palette_json(palette, exports_root / f"{file_stem}.json")
-            save_palette_csv(palette, exports_root / f"{file_stem}.csv")
+            json_path = exports_root / f"{file_stem}.json"
+            csv_path = exports_root / f"{file_stem}.csv"
+            save_palette_json(palette, json_path)
+            save_palette_csv(palette, csv_path)
+            created_files.extend([json_path, csv_path])
+            self.upload_webdav_files(created_files)
             return library_json_path
         if target_key == "originlab":
-            save_palette_ase(palette, exports_root / f"{file_stem}.ase")
-            save_palette_csv(palette, exports_root / f"{file_stem}.csv")
+            ase_path = exports_root / f"{file_stem}.ase"
+            csv_path = exports_root / f"{file_stem}.csv"
+            save_palette_ase(palette, ase_path)
+            save_palette_csv(palette, csv_path)
+            created_files.extend([ase_path, csv_path])
+            self.upload_webdav_files(created_files)
             return library_json_path
         content = self.build_clipboard_text(target_key, palette)
         extension = {"r": ".R", "python": ".py", "matlab": ".m"}[target_key]
-        (exports_root / f"{file_stem}{extension}").write_text(content, encoding="utf-8")
+        output_path = exports_root / f"{file_stem}{extension}"
+        output_path.write_text(content, encoding="utf-8")
+        created_files.append(output_path)
+        self.upload_webdav_files(created_files)
         return library_json_path
 
     def export_gradient_palette(self) -> None:
@@ -3062,7 +4078,13 @@ class MainWindow(QMainWindow):
         )
         output_dir = Path(self.config.library_dir) / "exports" / "originlab_gradient"
         ensure_directory(output_dir)
-        save_originlab_pal(palette, output_dir / f"{self.make_safe_filename(name.strip())}.pal", steps=steps)
+        output_path = output_dir / f"{self.make_safe_filename(name.strip())}.pal"
+        save_originlab_pal(palette, output_path, steps=steps)
+        try:
+            self.upload_webdav_file(output_path)
+        except WebDavError as exc:
+            QMessageBox.warning(self, "WebDAV", self.t("webdav_sync_failed", message=str(exc)))
+            return
         self.reload_palettes()
         self.statusBar().showMessage("Exported OriginLab gradient", 4000)
 
@@ -3109,6 +4131,11 @@ class MainWindow(QMainWindow):
             return
         dialog.exec()
         if dialog.saved_paths:
+            try:
+                self.upload_webdav_files(dialog.saved_paths)
+            except WebDavError as exc:
+                QMessageBox.warning(self, "WebDAV", self.t("webdav_sync_failed", message=str(exc)))
+                return
             self.pending_select_source_path = str(dialog.saved_paths[-1])
             self.reload_palettes()
             self.statusBar().showMessage(f"Saved {len(dialog.saved_paths)} PDF palette(s) into materials", 3500)
@@ -3169,6 +4196,11 @@ class MainWindow(QMainWindow):
             old_path.rename(new_path)
         except OSError as exc:
             QMessageBox.warning(self, "Rename Failed", str(exc))
+            return
+        try:
+            self.rename_webdav_path(old_path, new_path)
+        except WebDavError as exc:
+            QMessageBox.warning(self, "WebDAV", self.t("webdav_sync_failed", message=str(exc)))
             return
         self.statusBar().showMessage(f"Renamed to {new_path.name}", 3000)
         self.reload_palettes()
@@ -3261,6 +4293,11 @@ class MainWindow(QMainWindow):
             if self.recycle_path(path):
                 self.remove_path_from_config(str(path))
                 self.cleanup_empty_parent_dirs(path)
+                try:
+                    self.delete_webdav_path(path)
+                except WebDavError as exc:
+                    failed.append(f"{path.name} ({exc})")
+                    continue
                 deleted += 1
             else:
                 failed.append(path.name)
@@ -3268,8 +4305,8 @@ class MainWindow(QMainWindow):
             self.config.save()
             self.reload_palettes()
             self.current_palette = None
-            self.palette_title.setText("Select a palette")
-            self.palette_meta.setText("Choose one from the left to preview.")
+            self.palette_title.setText(self.t("palette_placeholder"))
+            self.palette_meta.setText(self.t("palette_meta_hint"))
             self.update_source_preview(None)
             self.render_palette_colors(None)
             self.statusBar().showMessage(f"Moved {deleted} item(s) to Recycle Bin", 3000)
@@ -3333,7 +4370,11 @@ class MainWindow(QMainWindow):
     def open_advanced_preview_dialog(self) -> None:
         state = self.collect_preview_state(chart_type="heatmap")
         if not state["colors"]:
-            QMessageBox.information(self, "Cart Empty", "Add colors to the Cart first. Advanced Preview uses the Cart order directly.")
+            QMessageBox.information(
+                self,
+                ui_text(self.ui_language, "cart_empty_title"),
+                ui_text(self.ui_language, "cart_empty_message"),
+            )
             return
         dialog = AdvancedPreviewDialog(state, self)
         dialog.exec()

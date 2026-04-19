@@ -164,7 +164,7 @@ def main() -> int:
         print(f"Build failed with exit code {completed.returncode}.")
         return completed.returncode
 
-    exe_path = DIST_DIR / APP_NAME / f"{APP_NAME}.exe"
+    exe_path = DIST_DIR / f"{APP_NAME}.exe"
     print()
     print("Build finished.")
     print(f"APP: {APP_NAME} {APP_VERSION}")

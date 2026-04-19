@@ -33,6 +33,7 @@ This project is built around a practical workflow for scientific plotting:
 | Preview | `Line`, `Bar`, `Scatter`, `Clustered`, `Circular`, `Map` |
 | Accessibility check | `Normal`, `Colorblind`, `Grayscale` |
 | Export | `ASE`, `CSV`, `JSON`, `PAL`, `R`, `Python`, `MATLAB` snippets |
+| Sync mode | local folders, `WebDAV` remote cache sync |
 
 | 模块 | 支持内容 |
 | --- | --- |
@@ -43,6 +44,7 @@ This project is built around a practical workflow for scientific plotting:
 | 预览类型 | `Line`、`Bar`、`Scatter`、`Clustered`、`Circular`、`Map` |
 | 检查模式 | `Normal`、`Colorblind`、`Grayscale` |
 | 导出方式 | `ASE`、`CSV`、`JSON`、`PAL`、`R`、`Python`、`MATLAB` 代码片段 |
+| 同步模式 | 本地文件夹、`WebDAV` 远端缓存同步 |
 
 ## Main Features / 主要功能
 
@@ -54,6 +56,7 @@ This project is built around a practical workflow for scientific plotting:
 - Generate related colors with `Similar`, `Complement`, `Blend Mid`, `Diverging`, and `Tint Ramp`
 - Use quick plot preview for daily checks and `Advanced Preview` for more complex plot styles
 - Export palettes to common scientific workflows and reusable code snippets
+- Switch between local folders and `WebDAV` mode for remote `materials` / `library` sync
 
 - 支持导入色卡文件、渐变、图片和 PDF 素材
 - 支持以文件夹树、筛选、收藏、标签方式浏览 `materials` 和 `library`
@@ -63,6 +66,34 @@ This project is built around a practical workflow for scientific plotting:
 - 支持 `Similar`、`Complement`、`Blend Mid`、`Diverging`、`Tint Ramp` 等配色辅助
 - 支持日常快速预览和独立的 `Advanced Preview` 高级示意图
 - 支持导出到常见科研工作流以及可复用代码片段
+- 支持在本地模式和 `WebDAV` 模式之间切换，并同步远端 `materials` / `library`
+
+## WebDAV Mode / WebDAV 模式
+
+When `WebDAV Mode` is enabled, the app treats the configured remote root as the workspace root and uses:
+
+启用 `WebDAV 模式` 后，程序会把你设置的远端根目录视为工作根目录，并使用：
+
+- `root/materials`
+- `root/library`
+
+The UI scans a local cache under `.webdav_cache/`, while `Rescan` pulls the latest remote state into that cache.
+
+界面实际扫描的是 `.webdav_cache/` 下的本地缓存；点击 `Rescan` 时会把远端最新内容同步到这个缓存。
+
+Recommended workflow:
+
+推荐用法：
+
+1. Open `WebDAV Setting`.
+2. Fill in the server URL, username, app/WebDAV password, and remote root.
+3. Use `Test Connection` first.
+4. After it succeeds, click `Rescan` to pull remote files into cache.
+
+1. 打开 `WebDAV Setting`。
+2. 填写服务器链接、用户名、应用/WebDAV 专用密码，以及远端根目录。
+3. 先点 `Test Connection`。
+4. 连接成功后，点击 `Rescan` 把远端文件同步到缓存。
 
 ## Map Note / 地图说明
 
@@ -119,6 +150,14 @@ Run from the project root:
 
 ```bash
 python -m app.main
+```
+
+Build the desktop executable:
+
+打包桌面版可执行文件：
+
+```bash
+python build_exe.py
 ```
 
 ## Ver 1.0.1 / 更新说明
