@@ -3,8 +3,8 @@ from __future__ import annotations
 
 APP_NAME = "ColorManager"
 APP_DISPLAY_NAME = "Color Library Manager"
-APP_VERSION = "1.0.2"
-APP_VERSION_INFO = (1, 0, 2, 0)
+APP_VERSION = "1.0.3"
+APP_VERSION_INFO = (1, 0, 3, 0)
 APP_AUTHOR = "Alsophila"
 APP_COPYRIGHT = f"Copyright (C) 2026 {APP_AUTHOR}"
 APP_TAGLINE = "仅限学术交流，完全免费"

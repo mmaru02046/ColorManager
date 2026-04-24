@@ -103,6 +103,8 @@ class WebDavClient:
             raise WebDavError(f"{method} {remote_path}: HTTP {exc.code}") from exc
         except URLError as exc:
             raise WebDavError(f"{method} {remote_path}: {exc.reason}") from exc
+        except TimeoutError as exc:
+            raise WebDavError(f"{method} {remote_path}: timed out") from exc
 
     def _request_optional(
         self,
@@ -127,6 +129,8 @@ class WebDavClient:
             raise WebDavError(f"{method} {remote_path}: HTTP {exc.code}") from exc
         except URLError as exc:
             raise WebDavError(f"{method} {remote_path}: {exc.reason}") from exc
+        except TimeoutError as exc:
+            raise WebDavError(f"{method} {remote_path}: timed out") from exc
 
     def ensure_directory(self, remote_path: str | PurePosixPath) -> None:
         path = self._remote_path(remote_path)

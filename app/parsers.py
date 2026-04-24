@@ -173,6 +173,8 @@ def load_pal_palette(path: Path) -> Palette:
         raise ValueError("Missing PAL data chunk")
     chunk_size = struct.unpack("<I", data[16:20])[0]
     payload = data[20:20 + chunk_size]
+    if len(payload) < 4:
+        raise ValueError("Incomplete PAL payload")
     version, color_count = struct.unpack("<HH", payload[:4])
     if version != 0x0300:
         raise ValueError("Unsupported PAL version")
@@ -181,7 +183,7 @@ def load_pal_palette(path: Path) -> Palette:
     for index in range(color_count):
         if offset + 4 > len(payload):
             break
-        blue, green, red, _flags = struct.unpack("<BBBB", payload[offset:offset + 4])
+        red, green, blue, _flags = struct.unpack("<BBBB", payload[offset:offset + 4])
         colors.append(ColorEntry(name=f"Color {index + 1}", hex_code=rgb_to_hex(red, green, blue)))
         offset += 4
     return Palette(name=path.stem, colors=colors, source_path=path, source_format="pal")

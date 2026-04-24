@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal, QUrl, QMimeData, QTimer
+from PySide6.QtCore import QObject, QPointF, QRectF, QSize, Qt, QThread, Signal, QUrl, QMimeData, QTimer
 from PySide6.QtGui import QColor, QFont, QGuiApplication, QIntValidator, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -224,6 +224,46 @@ def ui_text(language: str, key: str, **kwargs: object) -> str:
     language_map = translations.get(language, translations["zh"])
     template = language_map.get(key, key)
     return template.format(**kwargs)
+
+
+class WebDavSyncWorker(QObject):
+    finished = Signal()
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        url: str,
+        username: str,
+        password: str,
+        root_dir: str,
+        materials_dir: Path,
+        library_dir: Path,
+    ) -> None:
+        super().__init__()
+        self.url = url
+        self.username = username
+        self.password = password
+        self.root_dir = root_dir.strip()
+        self.materials_dir = materials_dir
+        self.library_dir = library_dir
+
+    def run(self) -> None:
+        try:
+            client = WebDavClient(self.url, self.username, self.password)
+            existing_dirs = client.list_child_directory_names(self.root_dir)
+            if "materials" not in existing_dirs:
+                client.ensure_child_directory(self.root_dir, "materials")
+            if "library" not in existing_dirs:
+                client.ensure_child_directory(self.root_dir, "library")
+            remote_base = self.root_dir.strip().strip("/")
+            materials_remote = f"/{remote_base}/materials" if remote_base else "/materials"
+            library_remote = f"/{remote_base}/library" if remote_base else "/library"
+            client.sync_directory(materials_remote, self.materials_dir)
+            client.sync_directory(library_remote, self.library_dir)
+        except WebDavError as exc:
+            self.failed.emit(str(exc))
+            return
+        self.finished.emit()
 
 
 class ClickableColorCard(QFrame):
@@ -1667,6 +1707,9 @@ class MainWindow(QMainWindow):
         self.status_rotation_index = 0
         self.status_rotation_timer = QTimer(self)
         self.status_rotation_label = QLabel()
+        self.webdav_sync_thread: QThread | None = None
+        self.webdav_sync_worker: WebDavSyncWorker | None = None
+        self.webdav_status_text = ""
         self.setWindowTitle(self.t("window_title"))
         self.resize(1720, 980)
         self.setAcceptDrops(True)
@@ -1722,8 +1765,77 @@ class MainWindow(QMainWindow):
         self.setup_status_bar()
         self.apply_language()
         self.sync_lab_color_preview()
-        self.load_initial_state()
         self.update_chart_preview()
+        # Defer remote sync and palette scanning so the window can appear first.
+        QTimer.singleShot(0, self.finish_startup)
+
+    def finish_startup(self) -> None:
+        self.statusBar().showMessage("Loading palettes...", 0)
+        try:
+            self.load_initial_state()
+        except Exception as exc:
+            self.statusBar().showMessage(f"Startup warning: {exc}", 8000)
+        else:
+            self.statusBar().clearMessage()
+
+    def set_webdav_status(self, text: str) -> None:
+        self.webdav_status_text = text
+        if hasattr(self, "webdav_status_label"):
+            self.webdav_status_label.setText(text)
+
+    def start_webdav_sync(self, *, reload_after: bool = True, success_message: str | None = None) -> bool:
+        if self.webdav_sync_thread is not None or not self.is_webdav_mode() or not self.has_webdav_settings():
+            return False
+        self.refresh_button.setEnabled(False)
+        self.storage_mode_button.setEnabled(False)
+        self.choose_webdav_root_button.setEnabled(False)
+        self.statusBar().showMessage("Syncing WebDAV in background...", 0)
+        self.set_webdav_status("WebDAV: syncing in background...")
+
+        worker = WebDavSyncWorker(
+            self.config.webdav_url,
+            self.config.webdav_username,
+            self.config.webdav_password,
+            self.config.webdav_root_dir,
+            self.webdav_cache_materials_dir(),
+            self.webdav_cache_library_dir(),
+        )
+        thread = QThread(self)
+        worker.moveToThread(thread)
+
+        def cleanup() -> None:
+            self.refresh_button.setEnabled(True)
+            self.storage_mode_button.setEnabled(True)
+            self.choose_webdav_root_button.setEnabled(True)
+            self.webdav_sync_worker = None
+            self.webdav_sync_thread = None
+            thread.deleteLater()
+
+        def handle_success() -> None:
+            if reload_after:
+                self.reload_palettes()
+            self.set_webdav_status("WebDAV: cache updated")
+            self.statusBar().showMessage(success_message or self.t("webdav_ready"), 3500)
+            cleanup()
+
+        def handle_failure(message: str) -> None:
+            if reload_after:
+                self.reload_palettes()
+            self.set_webdav_status(f"WebDAV: using cache ({message})")
+            self.statusBar().showMessage(self.t("webdav_sync_failed", message=message), 5000)
+            cleanup()
+
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(handle_success)
+        worker.failed.connect(thread.quit)
+        worker.failed.connect(handle_failure)
+        thread.started.connect(worker.run)
+        thread.finished.connect(thread.deleteLater)
+
+        self.webdav_sync_worker = worker
+        self.webdav_sync_thread = thread
+        thread.start()
+        return True
 
     def t(self, key: str, **kwargs: object) -> str:
         translations = {
@@ -1733,14 +1845,16 @@ class MainWindow(QMainWindow):
                 "top_materials": "素材库",
                 "top_library": "成品库",
                 "top_webdav_root": "WebDAV 设置",
-                "top_storage_mode_local": "本地模式",
-                "top_storage_mode_webdav": "WebDAV 模式",
+                "top_storage_mode_local": "切换到本地",
+                "top_storage_mode_webdav": "切换到 WebDAV",
                 "top_rescan": "重新扫描",
                 "top_import_files": "导入文件",
                 "top_import_folder": "导入文件夹",
                 "top_paste_image": "粘贴图片",
                 "webdav_root_not_set": "WebDAV：未配置",
                 "webdav_root_path": "WebDAV：{url} | 根目录：{path}",
+                "webdav_status_local": "状态：本地模式",
+                "webdav_status_cache": "状态：WebDAV 缓存模式，点击“重新扫描”同步",
                 "materials_not_set": "素材库：未设置",
                 "library_not_set": "成品库：未设置",
                 "materials_path": "素材库：{path}",
@@ -1851,14 +1965,16 @@ class MainWindow(QMainWindow):
                 "top_materials": "Materials",
                 "top_library": "Library",
                 "top_webdav_root": "WebDAV Setting",
-                "top_storage_mode_local": "Local Mode",
-                "top_storage_mode_webdav": "WebDAV Mode",
+                "top_storage_mode_local": "Switch to Local",
+                "top_storage_mode_webdav": "Switch to WebDAV",
                 "top_rescan": "Rescan",
                 "top_import_files": "Import Files",
                 "top_import_folder": "Import Folder",
                 "top_paste_image": "Paste Image",
                 "webdav_root_not_set": "WebDAV: not configured",
                 "webdav_root_path": "WebDAV: {url} | Root: {path}",
+                "webdav_status_local": "Status: Local mode",
+                "webdav_status_cache": "Status: WebDAV cache mode, click Rescan to sync",
                 "materials_not_set": "Materials: not set",
                 "library_not_set": "Library: not set",
                 "materials_path": "Materials: {path}",
@@ -2148,7 +2264,7 @@ class MainWindow(QMainWindow):
     def sync_storage_mode_ui(self) -> None:
         is_webdav = self.is_webdav_mode()
         self.storage_mode_button.setText(
-            self.t("top_storage_mode_webdav") if is_webdav else self.t("top_storage_mode_local")
+            self.t("top_storage_mode_local") if is_webdav else self.t("top_storage_mode_webdav")
         )
         if is_webdav:
             self.storage_mode_button.setStyleSheet(
@@ -2167,6 +2283,11 @@ class MainWindow(QMainWindow):
         self.choose_webdav_root_button.setEnabled(True)
         self.choose_webdav_root_button.setVisible(True)
         self.webdav_root_label.setVisible(is_webdav)
+        if is_webdav:
+            if not self.webdav_status_text:
+                self.set_webdav_status(self.t("webdav_status_cache"))
+        else:
+            self.set_webdav_status(self.t("webdav_status_local"))
         self.update_webdav_root_label()
 
     def apply_storage_mode_paths(self) -> None:
@@ -2190,6 +2311,9 @@ class MainWindow(QMainWindow):
             return
         if self.config.storage_mode == mode:
             return
+        if self.webdav_sync_thread is not None:
+            self.statusBar().showMessage("WebDAV sync is still running", 3000)
+            return
         if self.config.storage_mode == "local":
             self.config.local_materials_dir = self.config.materials_dir
             self.config.local_library_dir = self.config.library_dir
@@ -2198,6 +2322,7 @@ class MainWindow(QMainWindow):
             self.config.storage_mode = "local"
             return
         self.apply_storage_mode_paths()
+        self.webdav_client = None
         self.config.save()
         self.sync_storage_mode_ui()
         self.update_materials_label()
@@ -2224,12 +2349,8 @@ class MainWindow(QMainWindow):
         self.update_materials_label()
         self.update_library_label()
         if self.is_webdav_mode() and self.has_webdav_settings():
-            try:
-                self.sync_webdav_from_remote()
-            except WebDavError as exc:
-                QMessageBox.warning(self, "WebDAV", self.t("webdav_sync_failed", message=str(exc)))
-                return False
-            self.statusBar().showMessage(self.t("webdav_ready"), 3500)
+            self.set_webdav_status(self.t("webdav_status_cache"))
+            self.statusBar().showMessage("WebDAV configured. Use Rescan to sync cache.", 5000)
             self.reload_palettes()
         return True
 
@@ -2444,9 +2565,11 @@ class MainWindow(QMainWindow):
         self.materials_label = QLabel("Materials: not set")
         self.library_label = QLabel("Library: not set")
         self.webdav_root_label = QLabel("WebDAV Root: not set")
+        self.webdav_status_label = QLabel("")
         self.materials_label.setStyleSheet("color: #475569; background: transparent;")
         self.library_label.setStyleSheet("color: #475569; background: transparent;")
         self.webdav_root_label.setStyleSheet("color: #475569; background: transparent;")
+        self.webdav_status_label.setStyleSheet("color: #475569; background: transparent;")
         top_layout.addWidget(self.storage_mode_button)
         top_layout.addWidget(self.choose_webdav_root_button)
         top_layout.addWidget(self.choose_materials_button)
@@ -2460,6 +2583,7 @@ class MainWindow(QMainWindow):
         top_layout.addWidget(self.materials_label, 1)
         top_layout.addWidget(self.library_label, 1)
         top_layout.addWidget(self.webdav_root_label, 1)
+        top_layout.addWidget(self.webdav_status_label, 1)
         root_layout.addWidget(top_bar)
         content_splitter = QSplitter(Qt.Horizontal)
         content_splitter.setChildrenCollapsible(False)
@@ -2850,11 +2974,6 @@ class MainWindow(QMainWindow):
         self.update_materials_label()
         self.update_library_label()
         self.sync_storage_mode_ui()
-        if self.is_webdav_mode() and self.has_webdav_settings():
-            try:
-                self.sync_webdav_from_remote()
-            except WebDavError:
-                pass
         if self.config.materials_dir or self.config.library_dir:
             self.reload_palettes()
         if not self.config.welcome_seen:
@@ -2862,10 +2981,7 @@ class MainWindow(QMainWindow):
 
     def handle_refresh_action(self) -> None:
         if self.is_webdav_mode() and self.has_webdav_settings():
-            try:
-                self.sync_webdav_from_remote()
-            except WebDavError as exc:
-                self.statusBar().showMessage(self.t("webdav_sync_failed", message=str(exc)), 5000)
+            if self.start_webdav_sync(reload_after=True):
                 return
         self.reload_palettes()
     def show_first_run_guide(self) -> None:

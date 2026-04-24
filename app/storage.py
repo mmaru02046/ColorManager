@@ -107,7 +107,8 @@ def save_originlab_pal(palette: Palette, output_path: Path, steps: int = 256) ->
             )
 
     palette_data = struct.pack("<HH", 0x0300, len(gradient))
-    palette_data += b"".join(struct.pack("<BBBB", b, g, r, 0) for r, g, b in gradient)
+    # RIFF PAL stores PALETTEENTRY values in red, green, blue, flags order.
+    palette_data += b"".join(struct.pack("<BBBB", r, g, b, 0) for r, g, b in gradient)
     data_chunk = b"data" + struct.pack("<I", len(palette_data)) + palette_data
     riff_payload = b"PAL " + data_chunk
     output_path.write_bytes(b"RIFF" + struct.pack("<I", len(riff_payload)) + riff_payload)
